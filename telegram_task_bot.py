@@ -85,6 +85,24 @@ class TaskBot:
             )
         ''')
         
+        # Pending reminders table for 5-minute follow-ups
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS pending_reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER,
+                user_id INTEGER,
+                username TEXT,
+                chat_id INTEGER,
+                task_title TEXT,
+                frequency TEXT,
+                next_reminder TIMESTAMP,
+                reminder_count INTEGER DEFAULT 0,
+                max_reminders INTEGER DEFAULT 12,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (task_id) REFERENCES tasks (id)
+            )
+        ''')
+        
         conn.commit()
         conn.close()
         
@@ -389,26 +407,40 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
             VALUES (?, ?, ?, ?)
         ''', (task_id, user_id, chat_id, message_text))
         
-        conn.commit()
-        conn.close()
-        
         # Remove from pending responses
         del self.pending_responses[pending_key]
         
-        # Send confirmation
         if message_text == 'yes':
+            # Task completed - remove any pending reminders
+            cursor.execute('''
+                DELETE FROM pending_reminders 
+                WHERE task_id = ? AND user_id = ? AND chat_id = ?
+            ''', (task_id, user_id, chat_id))
+            
             await update.message.reply_text(
                 f"✅ Great! Task completed: {task_info['title']}"
             )
             # Update next run for recurring tasks
             await self._update_next_run(task_id, task_info['frequency'])
-        else:
+            
+        else:  # message_text == 'no'
+            # Task not completed - set up persistent 5-minute reminders
+            next_reminder = datetime.now() + timedelta(minutes=5)
+            
+            cursor.execute('''
+                INSERT OR REPLACE INTO pending_reminders 
+                (task_id, user_id, username, chat_id, task_title, frequency, next_reminder, reminder_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            ''', (task_id, user_id, task_info['assignee_username'], chat_id, 
+                  task_info['title'], task_info['frequency'], next_reminder))
+            
             await update.message.reply_text(
                 f"❌ Task not completed: {task_info['title']}\n"
-                "I'll ask again in 5 minutes."
+                "💡 I'll remind you again in 5 minutes until it's done!"
             )
-            # Schedule follow-up in 5 minutes
-            await self._schedule_followup(task_info, 5)
+            
+        conn.commit()
+        conn.close()
             
     async def _update_next_run(self, task_id: int, frequency: str) -> None:
         """Update next run time for recurring tasks."""
@@ -440,30 +472,18 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
         conn.commit()
         conn.close()
         
-    async def _schedule_followup(self, task_info: Dict, minutes: int) -> None:
-        """Schedule a follow-up reminder for incomplete tasks."""
-        # In a production environment, you might want to use a proper job queue
-        # For this example, we'll use asyncio.sleep
-        await asyncio.sleep(minutes * 60)
+    async def _clear_user_reminders(self, user_id: int, chat_id: int) -> None:
+        """Clear all pending reminders for a user when they respond yes."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
         
-        # Re-ask the task completion question
-        chat_id = task_info['chat_id']
-        username = task_info['assignee_username']
-        title = task_info['title']
+        cursor.execute('''
+            DELETE FROM pending_reminders 
+            WHERE user_id = ? AND chat_id = ?
+        ''', (user_id, chat_id))
         
-        try:
-            await self.application.bot.send_message(
-                chat_id=chat_id,
-                text=f"🔔 Follow-up reminder:\n\n@{username}, have you completed the task: **{title}**?\n\nPlease reply with 'yes' or 'no'.",
-                parse_mode='Markdown'
-            )
-            
-            # Add back to pending responses
-            pending_key = f"{task_info['assignee_user_id']}_{chat_id}"
-            self.pending_responses[pending_key] = task_info
-            
-        except Exception as e:
-            logger.error(f"Failed to send follow-up message: {e}")
+        conn.commit()
+        conn.close()
             
     async def check_scheduled_tasks(self) -> None:
         """Check for tasks that need to be executed now."""
@@ -472,6 +492,7 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
         
         now = datetime.now()
         
+        # Check for scheduled tasks that are due
         cursor.execute('''
             SELECT id, title, assignee_username, assignee_user_id, chat_id, 
                    scheduled_time, frequency
@@ -480,37 +501,136 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
         ''', (now,))
         
         due_tasks = cursor.fetchall()
-        conn.close()
         
+        # Process due tasks
         for task in due_tasks:
             task_id, title, username, user_id, chat_id, time, frequency = task
+            await self._send_task_reminder(task_id, title, username, user_id, chat_id, frequency)
             
-            # Send task reminder
-            try:
-                message = f"⏰ **Task Reminder**\n\n@{username}, it's time for your task:\n\n**{title}**\n\nHave you completed it? Please reply with 'yes' or 'no'."
-                
-                await self.application.bot.send_message(
-                    chat_id=chat_id,
-                    text=message,
-                    parse_mode='Markdown'
-                )
-                
-                # Add to pending responses
-                pending_key = f"{user_id}_{chat_id}" if user_id else f"unknown_{chat_id}"
-                self.pending_responses[pending_key] = {
-                    'task_id': task_id,
-                    'title': title,
-                    'assignee_username': username,
-                    'assignee_user_id': user_id,
-                    'chat_id': chat_id,
-                    'frequency': frequency
-                }
-                
-                # Schedule follow-up if no response
-                asyncio.create_task(self._schedule_followup(self.pending_responses[pending_key], 5))
-                
-            except Exception as e:
-                logger.error(f"Failed to send task reminder: {e}")
+        # Check for pending 5-minute reminders
+        cursor.execute('''
+            SELECT id, task_id, user_id, username, chat_id, task_title, 
+                   frequency, reminder_count, max_reminders
+            FROM pending_reminders 
+            WHERE next_reminder <= ?
+        ''', (now,))
+        
+        due_reminders = cursor.fetchall()
+        
+        # Process due reminders
+        for reminder in due_reminders:
+            (reminder_id, task_id, user_id, username, chat_id, 
+             task_title, frequency, reminder_count, max_reminders) = reminder
+             
+            if reminder_count >= max_reminders:
+                # Max reminders reached, stop reminding
+                cursor.execute('DELETE FROM pending_reminders WHERE id = ?', (reminder_id,))
+                try:
+                    await self.application.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"⏰ **Final Notice**\n\n@{username}, I've reminded you {max_reminders} times about:\n**{task_title}**\n\nI'll stop reminding you now. Please complete when possible! 😊",
+                        parse_mode='Markdown'
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send final reminder: {e}")
+            else:
+                # Send reminder and schedule next one
+                await self._send_followup_reminder(reminder_id, task_id, username, user_id, 
+                                                 chat_id, task_title, frequency, reminder_count)
+        
+        conn.commit()
+        conn.close()
+        
+    async def _send_task_reminder(self, task_id: int, title: str, username: str, 
+                                user_id: int, chat_id: int, frequency: str) -> None:
+        """Send initial task reminder."""
+        try:
+            message = f"⏰ **Task Reminder**\n\n@{username}, it's time for your task:\n\n**{title}**\n\nHave you completed it? Please reply with 'yes' or 'no'."
+            
+            await self.application.bot.send_message(
+                chat_id=chat_id,
+                text=message,
+                parse_mode='Markdown'
+            )
+            
+            # Add to pending responses
+            pending_key = f"{user_id}_{chat_id}" if user_id else f"unknown_{chat_id}"
+            self.pending_responses[pending_key] = {
+                'task_id': task_id,
+                'title': title,
+                'assignee_username': username,
+                'assignee_user_id': user_id,
+                'chat_id': chat_id,
+                'frequency': frequency
+            }
+            
+            # Set up automatic 5-minute reminder if no response
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            next_reminder = datetime.now() + timedelta(minutes=5)
+            cursor.execute('''
+                INSERT OR REPLACE INTO pending_reminders 
+                (task_id, user_id, username, chat_id, task_title, frequency, next_reminder, reminder_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+            ''', (task_id, user_id, username, chat_id, title, frequency, next_reminder))
+            
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Failed to send task reminder: {e}")
+            
+    async def _send_followup_reminder(self, reminder_id: int, task_id: int, username: str, 
+                                    user_id: int, chat_id: int, task_title: str, 
+                                    frequency: str, reminder_count: int) -> None:
+        """Send follow-up reminder and schedule next one."""
+        try:
+            # Choose message based on reminder count
+            if reminder_count == 0:
+                message = f"🔔 **Reminder**\n\n@{username}, you haven't responded yet about:\n**{task_title}**\n\nPlease reply 'yes' or 'no'"
+            elif reminder_count < 3:
+                message = f"🔔 **Follow-up #{reminder_count + 1}**\n\n@{username}, still waiting for your response about:\n**{task_title}**\n\nPlease reply 'yes' or 'no'"
+            elif reminder_count < 6:
+                message = f"⚠️ **Persistent Reminder**\n\n@{username}, this is reminder #{reminder_count + 1} for:\n**{task_title}**\n\nPlease complete and reply 'yes', or 'no' if you need help!"
+            else:
+                message = f"🚨 **Urgent Reminder #{reminder_count + 1}**\n\n@{username}, this task needs attention:\n**{task_title}**\n\nPlease respond 'yes' or 'no' - I'll keep reminding every 5 minutes!"
+            
+            await self.application.bot.send_message(
+                chat_id=chat_id,
+                text=message,
+                parse_mode='Markdown'
+            )
+            
+            # Add back to pending responses
+            pending_key = f"{user_id}_{chat_id}"
+            self.pending_responses[pending_key] = {
+                'task_id': task_id,
+                'title': task_title,
+                'assignee_username': username,
+                'assignee_user_id': user_id,
+                'chat_id': chat_id,
+                'frequency': frequency
+            }
+            
+            # Schedule next reminder
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            next_reminder = datetime.now() + timedelta(minutes=5)
+            new_count = reminder_count + 1
+            
+            cursor.execute('''
+                UPDATE pending_reminders 
+                SET next_reminder = ?, reminder_count = ?
+                WHERE id = ?
+            ''', (next_reminder, new_count, reminder_id))
+            
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Failed to send follow-up reminder: {e}")
                 
     def _run_schedule(self) -> None:
         """Run the schedule checker in a separate thread."""
@@ -525,7 +645,7 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
                 await self.check_scheduled_tasks()
             except Exception as e:
                 logger.error(f"Error in periodic task check: {e}")
-            await asyncio.sleep(60)  # Wait 1 minute
+            await asyncio.sleep(60)  # Check every minute for both tasks and reminders
             
     def run(self) -> None:
         """Start the bot."""
