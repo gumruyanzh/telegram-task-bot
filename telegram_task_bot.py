@@ -674,30 +674,51 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
 
 def main():
     """Main function to run the bot."""
+    # Debug: Print all environment variables
+    print("=== DEBUGGING ENVIRONMENT VARIABLES ===")
+    print(f"BOT_TOKEN exists: {'BOT_TOKEN' in os.environ}")
+    print(f"BOT_TOKEN value: {os.getenv('BOT_TOKEN', 'NOT_FOUND')[:20]}...")  # Only show first 20 chars for security
+    print(f"ADMIN_IDS exists: {'ADMIN_IDS' in os.environ}")
+    print(f"ADMIN_IDS value: {os.getenv('ADMIN_IDS', 'NOT_FOUND')}")
+    print("==========================================")
+    
     # Configuration for Railway deployment
-    BOT_TOKEN = os.getenv('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
+    BOT_TOKEN = os.getenv('BOT_TOKEN')
+    
+    # Check if token is properly set
+    if not BOT_TOKEN or BOT_TOKEN == '7812504300:AAEuRtWbG2IUcfKAPYdg1ZBThd5mKlWJPWI':
+        logger.error("Bot token not found in environment variables!")
+        logger.error("Please check your Railway environment variables:")
+        logger.error("1. Go to Railway dashboard")
+        logger.error("2. Click on your service") 
+        logger.error("3. Go to Variables tab")
+        logger.error("4. Make sure BOT_TOKEN is set")
+        logger.error("5. Redeploy the service")
+        return
     
     # Admin user IDs from environment variable (comma-separated)
-    # You can get your user ID by messaging @userinfobot on Telegram
-    ADMIN_IDS_STR = os.getenv('ADMIN_IDS', '123456789,987654321')
+    ADMIN_IDS_STR = os.getenv('ADMIN_IDS', '')
     
     try:
         # Parse comma-separated admin IDs
-        ADMIN_IDS = [int(id.strip()) for id in ADMIN_IDS_STR.split(',') if id.strip().isdigit()]
+        if ADMIN_IDS_STR:
+            ADMIN_IDS = [int(id.strip()) for id in ADMIN_IDS_STR.split(',') if id.strip().isdigit()]
+        else:
+            ADMIN_IDS = []
+            
         if not ADMIN_IDS:
-            ADMIN_IDS = [123456789]  # Fallback
+            logger.warning("No valid admin IDs found. Using default for testing.")
+            ADMIN_IDS = [1948521794,5738520540]  # Fallback
+            
     except (ValueError, AttributeError):
         logger.error("Invalid ADMIN_IDS format. Using default.")
-        ADMIN_IDS = [123456789]
+        ADMIN_IDS = [1948521794,5738520540]
     
+        
     # Validate configuration
-    if BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE':
-        logger.error("Please set your bot token in the BOT_TOKEN environment variable or modify the code.")
-        return
-        
-    if 123456789 in ADMIN_IDS:
-        logger.warning("Please replace the example admin IDs with real Telegram user IDs.")
-        
+    logger.info(f"Bot token length: {len(BOT_TOKEN) if BOT_TOKEN else 0}")
+    logger.info(f"Admin IDs: {ADMIN_IDS}")
+    
     # Create and run bot
     bot = TaskBot(token=BOT_TOKEN, admin_ids=ADMIN_IDS)
     bot.run()
