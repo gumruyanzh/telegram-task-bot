@@ -1,0 +1,12 @@
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "python task_bot.py"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+[variables]
+# These will be overridden by Railway dashboard variables
+BOT_TOKEN = "${{BOT_TOKEN}}"
+ADMIN_IDS = "${{ADMIN_IDS}}"
