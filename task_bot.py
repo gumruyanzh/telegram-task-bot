@@ -471,19 +471,6 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
             
         conn.commit()
         conn.close()
-        
-    async def _clear_user_reminders(self, user_id: int, chat_id: int) -> None:
-        """Clear all pending reminders for a user when they respond yes."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            DELETE FROM pending_reminders 
-            WHERE user_id = ? AND chat_id = ?
-        ''', (user_id, chat_id))
-        
-        conn.commit()
-        conn.close()
             
     async def check_scheduled_tasks(self) -> None:
         """Check for tasks that need to be executed now."""
@@ -631,12 +618,19 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
             
         except Exception as e:
             logger.error(f"Failed to send follow-up reminder: {e}")
-                
-    def _run_schedule(self) -> None:
-        """Run the schedule checker in a separate thread."""
-        while True:
-            schedule.run_pending()
-            time.sleep(60)  # Check every minute
+
+    async def _clear_user_reminders(self, user_id: int, chat_id: int) -> None:
+        """Clear all pending reminders for a user when they respond yes."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            DELETE FROM pending_reminders 
+            WHERE user_id = ? AND chat_id = ?
+        ''', (user_id, chat_id))
+        
+        conn.commit()
+        conn.close()
             
     async def _periodic_task_check(self) -> None:
         """Periodic task checker that runs every minute."""
@@ -674,54 +668,59 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
 
 def main():
     """Main function to run the bot."""
-    # Debug: Print all environment variables
-    print("=== DEBUGGING ENVIRONMENT VARIABLES ===")
-    print(f"BOT_TOKEN exists: {'BOT_TOKEN' in os.environ}")
-    print(f"BOT_TOKEN value: {os.getenv('BOT_TOKEN', 'NOT_FOUND')[:20]}...")  # Only show first 20 chars for security
-    print(f"ADMIN_IDS exists: {'ADMIN_IDS' in os.environ}")
-    print(f"ADMIN_IDS value: {os.getenv('ADMIN_IDS', 'NOT_FOUND')}")
-    print("==========================================")
+    print("🤖 TELEGRAM TASK BOT STARTING...")
+    print("=== ENVIRONMENT DEBUG ===")
     
-    # Configuration for Railway deployment
-    BOT_TOKEN = os.getenv('BOT_TOKEN')
+    # Check environment variables
+    bot_token_env = os.getenv('BOT_TOKEN')
+    admin_ids_env = os.getenv('ADMIN_IDS')
     
-    # Check if token is properly set
-    if not BOT_TOKEN or BOT_TOKEN == '7812504300:AAEuRtWbG2IUcfKAPYdg1ZBThd5mKlWJPWI':
-        logger.error("Bot token not found in environment variables!")
-        logger.error("Please check your Railway environment variables:")
-        logger.error("1. Go to Railway dashboard")
-        logger.error("2. Click on your service") 
-        logger.error("3. Go to Variables tab")
-        logger.error("4. Make sure BOT_TOKEN is set")
-        logger.error("5. Redeploy the service")
-        return
+    print(f"BOT_TOKEN found in env: {bot_token_env is not None}")
+    print(f"ADMIN_IDS found in env: {admin_ids_env is not None}")
     
-    # Admin user IDs from environment variable (comma-separated)
-    ADMIN_IDS_STR = os.getenv('ADMIN_IDS', '')
-    
-    try:
-        # Parse comma-separated admin IDs
-        if ADMIN_IDS_STR:
-            ADMIN_IDS = [int(id.strip()) for id in ADMIN_IDS_STR.split(',') if id.strip().isdigit()]
-        else:
-            ADMIN_IDS = []
-            
-        if not ADMIN_IDS:
-            logger.warning("No valid admin IDs found. Using default for testing.")
-            ADMIN_IDS = [1948521794,5738520540]  # Fallback
-            
-    except (ValueError, AttributeError):
-        logger.error("Invalid ADMIN_IDS format. Using default.")
-        ADMIN_IDS = [1948521794,5738520540]
-    
+    if bot_token_env:
+        print(f"BOT_TOKEN length: {len(bot_token_env)}")
+        print("✅ Using environment variables")
+        BOT_TOKEN = bot_token_env
         
-    # Validate configuration
-    logger.info(f"Bot token length: {len(BOT_TOKEN) if BOT_TOKEN else 0}")
-    logger.info(f"Admin IDs: {ADMIN_IDS}")
+        # Parse admin IDs
+        try:
+            if admin_ids_env:
+                ADMIN_IDS = [int(id.strip()) for id in admin_ids_env.split(',') if id.strip().isdigit()]
+            else:
+                ADMIN_IDS = [123456789]  # Default fallback
+        except:
+            ADMIN_IDS = [123456789]  # Error fallback
+            
+    else:
+        print("⚠️ Environment variables not found - using hardcoded values")
+        # HARDCODED VALUES - REPLACE THESE WITH YOUR ACTUAL VALUES
+        BOT_TOKEN = "7812504300:AAEuRtWbG2IUcfKAPYdg1ZBThd5mKlWJPWI"
+        ADMIN_IDS = [1948521794,5738520540]  # Replace with your actual Telegram user ID
+        
+        # Validation check
+        if BOT_TOKEN == "PASTE_YOUR_BOT_TOKEN_HERE":
+            print("❌ ERROR: Please replace PASTE_YOUR_BOT_TOKEN_HERE with your actual bot token!")
+            print("Get your bot token from @BotFather on Telegram")
+            print("Your token should look like: 123456789:ABCdefGHIjklMNOpqrsTUVwxyz")
+            return
+            
+        if 123456789 in ADMIN_IDS:
+            print("⚠️ WARNING: Please replace 123456789 with your actual Telegram user ID")
+            print("Get your user ID from @userinfobot on Telegram")
+    
+    print("========================")
+    print(f"Starting bot with token length: {len(BOT_TOKEN)}")
+    print(f"Admin IDs: {ADMIN_IDS}")
     
     # Create and run bot
-    bot = TaskBot(token=BOT_TOKEN, admin_ids=ADMIN_IDS)
-    bot.run()
+    try:
+        bot = TaskBot(token=BOT_TOKEN, admin_ids=ADMIN_IDS)
+        bot.run()
+    except Exception as e:
+        logger.error(f"Failed to start bot: {e}")
+        print(f"❌ Bot failed to start: {e}")
+        print("Please check your bot token and network connection")
 
 
 if __name__ == '__main__':
