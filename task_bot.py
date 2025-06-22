@@ -15,7 +15,6 @@ import schedule
 import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
-from threading import Thread
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -71,9 +70,6 @@ class TaskBot:
         
         # Initialize database
         self._init_database()
-        
-        # Start background task checker
-        self._start_background_checker()
         
     def _init_database(self) -> None:
         """Initialize SQLite database with required tables."""
@@ -617,15 +613,11 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             ''', (user_id, chat_id, task_info['title']))
             logger.info(f"REMOVED all reminders for user {user_id} task {task_id} after YES response")
             
-            # Send confirmation message (this will hide the buttons by sending a new message)
+            # Send confirmation message
             try:
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=f"✅ Task Complete!\n\n"
-                         f"📋 Task: {task_info['title']}\n"
-                         f"👤 User: @{task_info['assignee_username']}\n"
-                         f"⏰ Completed at: {get_pst_now().strftime('%H:%M PST')}\n\n"
-                         f"🎉 Great job! All reminders for this task have been stopped."
+                    text=f"✅ Task Complete! No more reminders will be sent."
                 )
                 logger.info(f"Successfully sent completion message for user {user_id}")
             except Exception as e:
@@ -644,22 +636,22 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
                   task_info['title'], task_info['frequency'], next_reminder_utc))
             logger.info(f"SET UP 2-minute reminders for user {user_id} task {task_id} after NO response")
             
-            # Send confirmation message (this will hide the buttons by sending a new message)
+            # Send confirmation message
             try:
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=f"📝 Task Postponed\n\n"
-                         f"📋 Task: {task_info['title']}\n"
-                         f"👤 User: @{task_info['assignee_username']}\n"
-                         f"⏰ Postponed at: {get_pst_now().strftime('%H:%M PST')}\n\n"
-                         f"💡 No worries! I'll remind you again in 2 minutes.\n"
-                         f"⏰ Reminders will continue every 2 minutes until you click YES."
+                    text=f"📝 Task Postponed. I will remind you again in 2 minutes."
                 )
                 logger.info(f"Successfully sent postponement message for user {user_id}")
             except Exception as e:
                 logger.error(f"Failed to send postponement message: {e}")
-            
-            # DO NOT send additional message to avoid event loop issues
+                
+        # Hide the buttons on the original message
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception as e:
+            logger.warning(f"Could not edit message to remove buttons, probably too old: {e}")
+
         conn.commit()
         conn.close()
         logger.info(f"User {user_id} responded '{response}' to task {task_id}: {task_info['title']}")
@@ -1028,35 +1020,6 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         conn.commit()
         conn.close()
             
-    def _start_background_checker(self) -> None:
-        """Start background thread for checking scheduled tasks."""
-        def background_loop():
-            """Run the background task checker."""
-            logger.info("Background task checker thread started")
-            
-            while True:
-                try:
-                    # Create new event loop for this thread
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    
-                    # Run the async function
-                    loop.run_until_complete(self.check_scheduled_tasks())
-                    loop.close()
-                    
-                    logger.debug("Background task check completed")
-                    
-                except Exception as e:
-                    logger.error(f"Error in background task check: {e}")
-                
-                # Wait 60 seconds before next check
-                time.sleep(60)
-        
-        # Start background thread
-        background_thread = Thread(target=background_loop, daemon=True)
-        background_thread.start()
-        logger.info("Background task checker thread started successfully")
-            
     def run(self) -> None:
         """Start the bot."""
         # Create application
@@ -1092,6 +1055,10 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         
         # Handler for inline keyboard callbacks
         self.application.add_handler(CallbackQueryHandler(self.handle_task_response))
+        
+        # Set up the job queue to check for tasks every 60 seconds
+        job_queue = self.application.job_queue
+        job_queue.run_repeating(self.check_scheduled_tasks, interval=60, first=5)
         
         # Start the bot
         logger.info("Starting Task Management Bot...")
