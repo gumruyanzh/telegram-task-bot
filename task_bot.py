@@ -23,7 +23,7 @@ from telegram.ext import (
     ContextTypes, filters
 )
 
-# Configure logging a
+# Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -252,7 +252,78 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
 
 Note: All times are in Pacific Standard Time (PST/PDT)."""
         
-        await update.message.reply_text(help_text)
+    async def debug_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /debug command to show current time and pending tasks."""
+        if not update.message or not update.effective_user:
+            return
+            
+        user_id = update.effective_user.id
+        
+        # Check if user is admin
+        if not self._is_admin(user_id):
+            await update.message.reply_text("❌ Only admins can use debug commands.")
+            return
+            
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            now_utc = datetime.utcnow()
+            now_pst = get_pst_now()
+            
+            # Get all active tasks
+            cursor.execute('''
+                SELECT id, title, assignee_username, scheduled_time, frequency, next_run, is_active
+                FROM tasks 
+                WHERE chat_id = ?
+                ORDER BY next_run
+            ''', (update.effective_chat.id,))
+            
+            tasks = cursor.fetchall()
+            
+            # Get pending reminders
+            cursor.execute('''
+                SELECT id, task_title, username, next_reminder, reminder_count
+                FROM pending_reminders
+                WHERE chat_id = ?
+                ORDER BY next_reminder
+            ''', (update.effective_chat.id,))
+            
+            reminders = cursor.fetchall()
+            
+            conn.close()
+            
+            debug_msg = f"🔧 Debug Information\n\n"
+            debug_msg += f"Current UTC time: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            debug_msg += f"Current PST time: {now_pst.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            
+            debug_msg += f"📋 Tasks ({len(tasks)} total):\n"
+            for task in tasks:
+                task_id, title, username, sched_time, freq, next_run, active = task
+                status = "Active" if active else "Inactive"
+                next_run_str = utc_to_pst_display(next_run) if next_run else "Not scheduled"
+                debug_msg += f"• ID {task_id}: {title[:20]}... (@{username})\n"
+                debug_msg += f"  Scheduled: {sched_time} PST ({freq})\n"
+                debug_msg += f"  Next run: {next_run_str}\n"
+                debug_msg += f"  Status: {status}\n\n"
+            
+            debug_msg += f"🔔 Pending Reminders ({len(reminders)} total):\n"
+            for reminder in reminders:
+                rem_id, task_title, username, next_reminder, count = reminder
+                next_rem_str = utc_to_pst_display(next_reminder) if next_reminder else "Not scheduled"
+                debug_msg += f"• {task_title[:20]}... (@{username})\n"
+                debug_msg += f"  Next reminder: {next_rem_str}\n"
+                debug_msg += f"  Reminder count: {count}\n\n"
+            
+            # Split message if too long
+            if len(debug_msg) > 4000:
+                debug_msg = debug_msg[:4000] + "...\n\n(Message truncated)"
+            
+            await update.message.reply_text(debug_msg)
+            
+        except Exception as e:
+            await update.message.reply_text(f"❌ Debug error: {str(e)}")
+            logger.error(f"Debug command error: {e}")
         
     async def create_task_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /createtask command."""
@@ -521,71 +592,91 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         """Check for tasks that need to be executed now."""
         # Don't run if application isn't set up yet
         if not self.application:
+            logger.debug("Application not ready yet, skipping task check")
             return
             
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        now_utc = datetime.utcnow()  # Get current UTC time for comparison
-        
-        # Check for scheduled tasks that are due
-        cursor.execute('''
-            SELECT id, title, assignee_username, assignee_user_id, chat_id, 
-                   scheduled_time, frequency
-            FROM tasks 
-            WHERE is_active = 1 AND next_run <= ?
-        ''', (now_utc,))
-        
-        due_tasks = cursor.fetchall()
-        
-        # Process due tasks
-        for task in due_tasks:
-            task_id, title, username, user_id, chat_id, time, frequency = task
-            await self._send_task_reminder(task_id, title, username, user_id, chat_id, frequency)
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
             
-        # Check for pending 5-minute reminders
-        cursor.execute('''
-            SELECT id, task_id, user_id, username, chat_id, task_title, 
-                   frequency, reminder_count, max_reminders
-            FROM pending_reminders 
-            WHERE next_reminder <= ?
-        ''', (now_utc,))
-        
-        due_reminders = cursor.fetchall()
-        
-        # Process due reminders
-        for reminder in due_reminders:
-            (reminder_id, task_id, user_id, username, chat_id, 
-             task_title, frequency, reminder_count, max_reminders) = reminder
-             
-            if reminder_count >= max_reminders:
-                # Max reminders reached, stop reminding
-                cursor.execute('DELETE FROM pending_reminders WHERE id = ?', (reminder_id,))
-                try:
-                    await self.application.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"⏰ Final Notice\n\n@{username}, I've reminded you {max_reminders} times about:\n{task_title}\n\nI'll stop reminding you now. Please complete when possible! 😊"
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to send final reminder: {e}")
-            else:
-                # Send reminder and schedule next one
-                await self._send_followup_reminder(reminder_id, task_id, username, user_id, 
-                                                 chat_id, task_title, frequency, reminder_count)
-        
-        conn.commit()
-        conn.close()
+            now_utc = datetime.utcnow()  # Get current UTC time for comparison
+            logger.debug(f"Checking for tasks due before: {now_utc}")
+            
+            # Check for scheduled tasks that are due
+            cursor.execute('''
+                SELECT id, title, assignee_username, assignee_user_id, chat_id, 
+                       scheduled_time, frequency, next_run
+                FROM tasks 
+                WHERE is_active = 1 AND next_run <= ?
+            ''', (now_utc,))
+            
+            due_tasks = cursor.fetchall()
+            logger.info(f"Found {len(due_tasks)} due tasks")
+            
+            # Process due tasks
+            for task in due_tasks:
+                task_id, title, username, user_id, chat_id, time, frequency, next_run = task
+                logger.info(f"Processing due task: {task_id} - {title} for @{username}")
+                await self._send_task_reminder(task_id, title, username, user_id, chat_id, frequency)
+                
+            # Check for pending 5-minute reminders
+            cursor.execute('''
+                SELECT id, task_id, user_id, username, chat_id, task_title, 
+                       frequency, reminder_count, max_reminders, next_reminder
+                FROM pending_reminders 
+                WHERE next_reminder <= ?
+            ''', (now_utc,))
+            
+            due_reminders = cursor.fetchall()
+            logger.info(f"Found {len(due_reminders)} due reminders")
+            
+            # Process due reminders
+            for reminder in due_reminders:
+                (reminder_id, task_id, user_id, username, chat_id, 
+                 task_title, frequency, reminder_count, max_reminders, next_reminder) = reminder
+                 
+                logger.info(f"Processing reminder {reminder_id} for @{username}: {task_title}")
+                 
+                if reminder_count >= max_reminders:
+                    # Max reminders reached, stop reminding
+                    cursor.execute('DELETE FROM pending_reminders WHERE id = ?', (reminder_id,))
+                    try:
+                        await self.application.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"⏰ Final Notice\n\n@{username}, I've reminded you {max_reminders} times about:\n{task_title}\n\nI'll stop reminding you now. Please complete when possible! 😊"
+                        )
+                        logger.info(f"Sent final notice to @{username}")
+                    except Exception as e:
+                        logger.error(f"Failed to send final reminder: {e}")
+                else:
+                    # Send reminder and schedule next one
+                    await self._send_followup_reminder(reminder_id, task_id, username, user_id, 
+                                                     chat_id, task_title, frequency, reminder_count)
+            
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Error in check_scheduled_tasks: {e}")
+            try:
+                conn.close()
+            except:
+                pass
         
     async def _send_task_reminder(self, task_id: int, title: str, username: str, 
                                 user_id: int, chat_id: int, frequency: str) -> None:
         """Send initial task reminder."""
         try:
+            logger.info(f"Sending task reminder for task {task_id}: {title} to @{username} in chat {chat_id}")
+            
             message = f"⏰ Task Reminder\n\n@{username}, it's time for your task:\n\n{title}\n\nHave you completed it? Please reply with 'yes' or 'no'."
             
             await self.application.bot.send_message(
                 chat_id=chat_id,
                 text=message
             )
+            
+            logger.info(f"Task reminder sent successfully to @{username}")
             
             # Add to pending responses
             pending_key = f"{user_id}_{chat_id}" if user_id else f"unknown_{chat_id}"
@@ -610,11 +701,29 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
                 VALUES (?, ?, ?, ?, ?, ?, ?, 0)
             ''', (task_id, user_id, username, chat_id, title, frequency, next_reminder_utc))
             
+            # Update the task's next_run for recurring tasks
+            if frequency == 'daily':
+                # Schedule next day
+                next_day_utc = datetime.utcnow() + timedelta(days=1)
+                cursor.execute('''
+                    UPDATE tasks SET next_run = ?, last_run = ? WHERE id = ?
+                ''', (next_day_utc, datetime.utcnow(), task_id))
+                logger.info(f"Scheduled daily task {task_id} for next day: {next_day_utc}")
+            else:
+                # Mark one-time task as inactive
+                cursor.execute('UPDATE tasks SET is_active = 0, last_run = ? WHERE id = ?', 
+                             (datetime.utcnow(), task_id))
+                logger.info(f"Marked one-time task {task_id} as inactive")
+            
             conn.commit()
             conn.close()
             
         except Exception as e:
-            logger.error(f"Failed to send task reminder: {e}")
+            logger.error(f"Failed to send task reminder for task {task_id}: {e}")
+            try:
+                conn.close()
+            except:
+                pass
             
     async def _send_followup_reminder(self, reminder_id: int, task_id: int, username: str, 
                                     user_id: int, chat_id: int, task_title: str, 
@@ -683,6 +792,8 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         """Start background thread for checking scheduled tasks."""
         def background_loop():
             """Run the background task checker."""
+            logger.info("Background task checker thread started")
+            
             while True:
                 try:
                     # Create new event loop for this thread
@@ -693,6 +804,8 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
                     loop.run_until_complete(self.check_scheduled_tasks())
                     loop.close()
                     
+                    logger.debug("Background task check completed")
+                    
                 except Exception as e:
                     logger.error(f"Error in background task check: {e}")
                 
@@ -702,7 +815,7 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         # Start background thread
         background_thread = Thread(target=background_loop, daemon=True)
         background_thread.start()
-        logger.info("Background task checker started")
+        logger.info("Background task checker thread started successfully")
             
     async def _periodic_task_check(self) -> None:
         """Periodic task checker that runs every minute."""
@@ -735,6 +848,7 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         # Add handlers
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
+        self.application.add_handler(CommandHandler("debug", self.debug_command))
         self.application.add_handler(CommandHandler("createtask", self.create_task_command))
         self.application.add_handler(CommandHandler("tasks", self.list_tasks_command))
         self.application.add_handler(CommandHandler("removetask", self.remove_task_command))
