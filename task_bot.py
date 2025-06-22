@@ -49,6 +49,9 @@ class TaskBot:
         # Initialize database
         self._init_database()
         
+        # Start background task checker
+        self._start_background_checker()
+        
     def _init_database(self) -> None:
         """Initialize SQLite database with required tables."""
         conn = sqlite3.connect(self.db_path)
@@ -474,6 +477,10 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
             
     async def check_scheduled_tasks(self) -> None:
         """Check for tasks that need to be executed now."""
+        # Don't run if application isn't set up yet
+        if not self.application:
+            return
+            
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -632,6 +639,31 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
         conn.commit()
         conn.close()
             
+    def _start_background_checker(self) -> None:
+        """Start background thread for checking scheduled tasks."""
+        def background_loop():
+            """Run the background task checker."""
+            while True:
+                try:
+                    # Create new event loop for this thread
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    
+                    # Run the async function
+                    loop.run_until_complete(self.check_scheduled_tasks())
+                    loop.close()
+                    
+                except Exception as e:
+                    logger.error(f"Error in background task check: {e}")
+                
+                # Wait 60 seconds before next check
+                time.sleep(60)
+        
+        # Start background thread
+        background_thread = Thread(target=background_loop, daemon=True)
+        background_thread.start()
+        logger.info("Background task checker started")
+            
     async def _periodic_task_check(self) -> None:
         """Periodic task checker that runs every minute."""
         while True:
@@ -658,12 +690,12 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_task_response)
         )
         
-        # Start periodic task checker
-        asyncio.create_task(self._periodic_task_check())
-        
         # Start the bot
         logger.info("Starting Task Management Bot...")
-        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+        self.application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            stop_signals=None  # Let Railway handle process management
+        )
 
 
 def main():
