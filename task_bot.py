@@ -16,6 +16,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from threading import Thread
+import pytz
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -29,6 +30,27 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Pacific Time Zone setup
+PST = pytz.timezone('America/Los_Angeles')  # This handles both PST and PDT automatically
+
+def get_pst_now() -> datetime:
+    """Get current time in PST/PDT."""
+    return datetime.now(PST)
+
+def pst_to_utc(pst_time: datetime) -> datetime:
+    """Convert PST time to UTC for database storage."""
+    if pst_time.tzinfo is None:
+        pst_time = PST.localize(pst_time)
+    return pst_time.astimezone(pytz.UTC)
+
+def utc_to_pst(utc_time: datetime) -> datetime:
+    """Convert UTC time from database to PST for display."""
+    if isinstance(utc_time, str):
+        utc_time = datetime.fromisoformat(utc_time.replace('Z', '+00:00'))
+    if utc_time.tzinfo is None:
+        utc_time = pytz.UTC.localize(utc_time)
+    return utc_time.astimezone(PST)
 
 class TaskBot:
     def __init__(self, token: str, admin_ids: List[int], db_path: str = "tasks.db"):
@@ -141,28 +163,29 @@ class TaskBot:
             return None
             
     def _calculate_next_run(self, scheduled_time: str, frequency: str) -> datetime:
-        """Calculate the next run time for a task."""
-        now = datetime.now()
+        """Calculate the next run time for a task in PST."""
+        now_pst = get_pst_now()
         time_parts = scheduled_time.split(":")
         hour, minute = int(time_parts[0]), int(time_parts[1])
         
         if frequency == "once":
-            # Schedule for today if time hasn't passed, otherwise tomorrow
-            next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if next_run <= now:
-                next_run += timedelta(days=1)
+            # Schedule for today if time hasn't passed, otherwise tomorrow (in PST)
+            next_run_pst = now_pst.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if next_run_pst <= now_pst:
+                next_run_pst += timedelta(days=1)
         elif frequency == "daily":
-            # Schedule for today if time hasn't passed, otherwise tomorrow
-            next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if next_run <= now:
-                next_run += timedelta(days=1)
+            # Schedule for today if time hasn't passed, otherwise tomorrow (in PST)
+            next_run_pst = now_pst.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if next_run_pst <= now_pst:
+                next_run_pst += timedelta(days=1)
         else:
             # Default to once
-            next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if next_run <= now:
-                next_run += timedelta(days=1)
-                
-        return next_run
+            next_run_pst = now_pst.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if next_run_pst <= now_pst:
+                next_run_pst += timedelta(days=1)
+        
+        # Convert to UTC for database storage
+        return pst_to_utc(next_run_pst)
         
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
@@ -180,7 +203,7 @@ I help you assign and track tasks in your group!
 **For regular users:**
 • Simply respond "yes" or "no" when asked about task completion
 
-**Time format:** Use 24-hour format (e.g., 14:30) or 12-hour with AM/PM (e.g., 2:30PM)
+        **Time format:** Use 24-hour format (e.g., 14:30) or 12-hour with AM/PM (e.g., 2:30PM) - all times are in PST
 **Frequency options:** once, daily
 
 Need help? Use /help for detailed instructions!
@@ -206,8 +229,8 @@ When you're mentioned for a task, simply reply:
 • "no" - Task not completed ❌
 
 **Time Formats:**
-• 24-hour: 09:00, 17:30, 23:45
-• 12-hour: 9:00AM, 5:30PM, 11:45PM
+• 24-hour: 09:00, 17:30, 23:45 (PST)
+• 12-hour: 9:00AM, 5:30PM, 11:45PM (PST)
 
 **Frequency Options:**
 • `once` - One-time task
@@ -218,6 +241,8 @@ Only authorized admins can create and remove tasks.
 
 **Automatic Follow-ups:**
 If you don't respond or say "no", the bot will ask again after 5 minutes.
+
+**Note:** All times are in Pacific Standard Time (PST/PDT).
         """
         await update.message.reply_text(help_text, parse_mode='Markdown')
         
@@ -288,9 +313,9 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
             f"**Task ID:** {task_id}\n"
             f"**Assignee:** @{username}\n"
             f"**Description:** {description}\n"
-            f"**Time:** {parsed_time}\n"
+            f"**Time:** {parsed_time} PST\n"
             f"**Frequency:** {frequency}\n"
-            f"**Next run:** {next_run.strftime('%Y-%m-%d %H:%M')}",
+            f"**Next run:** {utc_to_pst(next_run).strftime('%Y-%m-%d %H:%M PST')}",
             parse_mode='Markdown'
         )
         
@@ -318,15 +343,19 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
         
         for task in tasks:
             task_id, title, username, time, freq, next_run, active = task
-            next_run_dt = datetime.fromisoformat(next_run) if next_run else "Not scheduled"
             
-            if isinstance(next_run_dt, datetime):
-                next_run_str = next_run_dt.strftime('%Y-%m-%d %H:%M')
+            if next_run:
+                try:
+                    # Convert UTC to PST for display
+                    next_run_pst = utc_to_pst(datetime.fromisoformat(next_run))
+                    next_run_str = next_run_pst.strftime('%Y-%m-%d %H:%M PST')
+                except:
+                    next_run_str = "Not scheduled"
             else:
-                next_run_str = str(next_run_dt)
+                next_run_str = "Not scheduled"
                 
             message += f"**ID {task_id}:** {title}\n"
-            message += f"👤 @{username} | ⏰ {time} | 🔄 {freq}\n"
+            message += f"👤 @{username} | ⏰ {time} PST | 🔄 {freq}\n"
             message += f"📅 Next: {next_run_str}\n\n"
             
         await update.message.reply_text(message, parse_mode='Markdown')
@@ -428,14 +457,15 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
             
         else:  # message_text == 'no'
             # Task not completed - set up persistent 5-minute reminders
-            next_reminder = datetime.now() + timedelta(minutes=5)
+            next_reminder_pst = get_pst_now() + timedelta(minutes=5)
+            next_reminder_utc = pst_to_utc(next_reminder_pst)
             
             cursor.execute('''
                 INSERT OR REPLACE INTO pending_reminders 
                 (task_id, user_id, username, chat_id, task_title, frequency, next_reminder, reminder_count)
                 VALUES (?, ?, ?, ?, ?, ?, ?, 1)
             ''', (task_id, user_id, task_info['assignee_username'], chat_id, 
-                  task_info['title'], task_info['frequency'], next_reminder))
+                  task_info['title'], task_info['frequency'], next_reminder_utc))
             
             await update.message.reply_text(
                 f"❌ Task not completed: {task_info['title']}\n"
@@ -484,7 +514,7 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        now = datetime.now()
+        now_utc = datetime.now(pytz.UTC)  # Get current UTC time for comparison
         
         # Check for scheduled tasks that are due
         cursor.execute('''
@@ -492,7 +522,7 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
                    scheduled_time, frequency
             FROM tasks 
             WHERE is_active = 1 AND next_run <= ?
-        ''', (now,))
+        ''', (now_utc,))
         
         due_tasks = cursor.fetchall()
         
@@ -507,7 +537,7 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
                    frequency, reminder_count, max_reminders
             FROM pending_reminders 
             WHERE next_reminder <= ?
-        ''', (now,))
+        ''', (now_utc,))
         
         due_reminders = cursor.fetchall()
         
@@ -562,12 +592,14 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            next_reminder = datetime.now() + timedelta(minutes=5)
+            next_reminder_pst = get_pst_now() + timedelta(minutes=5)
+            next_reminder_utc = pst_to_utc(next_reminder_pst)
+            
             cursor.execute('''
                 INSERT OR REPLACE INTO pending_reminders 
                 (task_id, user_id, username, chat_id, task_title, frequency, next_reminder, reminder_count)
                 VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-            ''', (task_id, user_id, username, chat_id, title, frequency, next_reminder))
+            ''', (task_id, user_id, username, chat_id, title, frequency, next_reminder_utc))
             
             conn.commit()
             conn.close()
@@ -611,14 +643,15 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            next_reminder = datetime.now() + timedelta(minutes=5)
+            next_reminder_pst = get_pst_now() + timedelta(minutes=5)
+            next_reminder_utc = pst_to_utc(next_reminder_pst)
             new_count = reminder_count + 1
             
             cursor.execute('''
                 UPDATE pending_reminders 
                 SET next_reminder = ?, reminder_count = ?
                 WHERE id = ?
-            ''', (next_reminder, new_count, reminder_id))
+            ''', (next_reminder_utc, new_count, reminder_id))
             
             conn.commit()
             conn.close()
