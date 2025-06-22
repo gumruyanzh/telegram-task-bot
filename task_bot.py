@@ -348,7 +348,7 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         await update.message.reply_text("🧪 Manually triggering task checker...")
         
         # Force check for scheduled tasks
-        await self.check_scheduled_tasks()
+        await self.check_scheduled_tasks(context)
         
         await update.message.reply_text("✅ Task check completed. Check logs for details.")
         
@@ -753,9 +753,9 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         conn.commit()
         conn.close()
             
-    async def check_scheduled_tasks(self) -> None:
+    async def check_scheduled_tasks(self, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Check for tasks that need to be executed now."""
-        # Don't run if application isn't set up yet
+        # This function is now run by the JobQueue, which passes the context.
         if not self.application:
             logger.debug("Application not ready yet, skipping task check")
             return
