@@ -16,7 +16,6 @@ import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from threading import Thread
-import pytz
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -31,26 +30,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Pacific Time Zone setup
-PST = pytz.timezone('America/Los_Angeles')  # This handles both PST and PDT automatically
-
+# Pacific Time Zone setup - simplified approach
 def get_pst_now() -> datetime:
-    """Get current time in PST/PDT."""
-    return datetime.now(PST)
+    """Get current time in PST (UTC-8) or PDT (UTC-7)."""
+    utc_now = datetime.utcnow()
+    # Simple PST offset (this handles most cases)
+    pst_offset = timedelta(hours=-8)  # PST is UTC-8
+    return utc_now + pst_offset
 
-def pst_to_utc(pst_time: datetime) -> datetime:
-    """Convert PST time to UTC for database storage."""
-    if pst_time.tzinfo is None:
-        pst_time = PST.localize(pst_time)
-    return pst_time.astimezone(pytz.UTC)
+def pst_datetime_to_utc(year: int, month: int, day: int, hour: int, minute: int) -> datetime:
+    """Convert PST date/time to UTC for database storage."""
+    pst_time = datetime(year, month, day, hour, minute)
+    # Convert PST to UTC (add 8 hours)
+    return pst_time + timedelta(hours=8)
 
-def utc_to_pst(utc_time: datetime) -> datetime:
-    """Convert UTC time from database to PST for display."""
-    if isinstance(utc_time, str):
-        utc_time = datetime.fromisoformat(utc_time.replace('Z', '+00:00'))
-    if utc_time.tzinfo is None:
-        utc_time = pytz.UTC.localize(utc_time)
-    return utc_time.astimezone(PST)
+def utc_to_pst_display(utc_time) -> str:
+    """Convert UTC time to PST for display."""
+    try:
+        if isinstance(utc_time, str):
+            utc_dt = datetime.fromisoformat(utc_time.replace('Z', ''))
+        else:
+            utc_dt = utc_time
+        
+        # Convert UTC to PST (subtract 8 hours)
+        pst_dt = utc_dt - timedelta(hours=8)
+        return pst_dt.strftime('%Y-%m-%d %H:%M PST')
+    except:
+        return "Not scheduled"
 
 class TaskBot:
     def __init__(self, token: str, admin_ids: List[int], db_path: str = "tasks.db"):
@@ -184,8 +190,8 @@ class TaskBot:
             if next_run_pst <= now_pst:
                 next_run_pst += timedelta(days=1)
         
-        # Convert to UTC for database storage
-        return pst_to_utc(next_run_pst)
+        # Convert to UTC for database storage (add 8 hours)
+        return next_run_pst + timedelta(hours=8)
         
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
@@ -315,7 +321,7 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
             f"**Description:** {description}\n"
             f"**Time:** {parsed_time} PST\n"
             f"**Frequency:** {frequency}\n"
-            f"**Next run:** {utc_to_pst(next_run).strftime('%Y-%m-%d %H:%M PST')}",
+            f"**Next run:** {utc_to_pst_display(next_run)}",
             parse_mode='Markdown'
         )
         
@@ -345,12 +351,7 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
             task_id, title, username, time, freq, next_run, active = task
             
             if next_run:
-                try:
-                    # Convert UTC to PST for display
-                    next_run_pst = utc_to_pst(datetime.fromisoformat(next_run))
-                    next_run_str = next_run_pst.strftime('%Y-%m-%d %H:%M PST')
-                except:
-                    next_run_str = "Not scheduled"
+                next_run_str = utc_to_pst_display(next_run)
             else:
                 next_run_str = "Not scheduled"
                 
@@ -457,8 +458,7 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
             
         else:  # message_text == 'no'
             # Task not completed - set up persistent 5-minute reminders
-            next_reminder_pst = get_pst_now() + timedelta(minutes=5)
-            next_reminder_utc = pst_to_utc(next_reminder_pst)
+            next_reminder_utc = datetime.utcnow() + timedelta(minutes=5)
             
             cursor.execute('''
                 INSERT OR REPLACE INTO pending_reminders 
@@ -514,7 +514,7 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        now_utc = datetime.now(pytz.UTC)  # Get current UTC time for comparison
+        now_utc = datetime.utcnow()  # Get current UTC time for comparison
         
         # Check for scheduled tasks that are due
         cursor.execute('''
@@ -592,8 +592,7 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            next_reminder_pst = get_pst_now() + timedelta(minutes=5)
-            next_reminder_utc = pst_to_utc(next_reminder_pst)
+            next_reminder_utc = datetime.utcnow() + timedelta(minutes=5)
             
             cursor.execute('''
                 INSERT OR REPLACE INTO pending_reminders 
@@ -643,8 +642,7 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            next_reminder_pst = get_pst_now() + timedelta(minutes=5)
-            next_reminder_utc = pst_to_utc(next_reminder_pst)
+            next_reminder_utc = datetime.utcnow() + timedelta(minutes=5)
             new_count = reminder_count + 1
             
             cursor.execute('''
