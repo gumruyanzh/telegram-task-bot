@@ -190,26 +190,28 @@ class TaskBot:
         
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
-        welcome_message = """
-🤖 **Task Management Bot**
+        if not update.message:
+            return
+            
+        welcome_message = """🤖 Task Management Bot
 
 I help you assign and track tasks in your group!
 
-**Admin Commands:**
-• `/createtask @username [description] [time] [frequency]` - Create a new task
-• `/tasks` - List all active tasks
-• `/removetask [task_id]` - Remove a task
-• `/help` - Show this help message
+Admin Commands:
+• /createtask @username [description] [time] [frequency] - Create a new task
+• /tasks - List all active tasks
+• /removetask [task_id] - Remove a task
+• /help - Show this help message
 
-**For regular users:**
-• Simply respond "yes" or "no" when asked about task completion
+For regular users:
+• Click YES ✅ or NO ❌ buttons when asked about task completion
 
-        **Time format:** Use 24-hour format (e.g., 14:30) or 12-hour with AM/PM (e.g., 2:30PM) - all times are in PST
-**Frequency options:** once, daily
+Time format: Use 24-hour format (e.g., 14:30) or 12-hour with AM/PM (e.g., 2:30PM) - all times are in PST
+Frequency options: once, daily
 
-Need help? Use /help for detailed instructions!
-        """
-        await update.message.reply_text(welcome_message, parse_mode='Markdown')
+Need help? Use /help for detailed instructions!"""
+        
+        await update.message.reply_text(welcome_message)
         
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /help command."""
@@ -227,9 +229,9 @@ Managing Tasks:
 • /removetask 5 - Remove task with ID 5
 
 Task Responses:
-When you're mentioned for a task, simply reply:
-• "yes" - Task completed ✅
-• "no" - Task not completed ❌
+When you're mentioned for a task, click the buttons:
+• ✅ YES - Task completed
+• ❌ NO - Task not completed
 
 Time Formats:
 • 24-hour: 09:00, 17:30, 23:45 (PST)
@@ -243,9 +245,11 @@ Admin Features:
 Only authorized admins can create and remove tasks.
 
 Automatic Follow-ups:
-If you don't respond or say "no", the bot will ask again after 5 minutes.
+If you don't click any button or click NO, the bot will remind you again every 2 minutes.
 
 Note: All times are in Pacific Standard Time (PST/PDT)."""
+        
+        await update.message.reply_text(help_text)
         
     async def debug_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /debug command to show current time and pending tasks."""
@@ -331,6 +335,8 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             
         except Exception as e:
             await update.message.reply_text(f"❌ Debug error: {str(e)}")
+            logger.error(f"Debug command error: {e}")
+            
     async def test_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /test command to immediately trigger task reminders for testing."""
         if not update.message or not update.effective_user:
@@ -701,11 +707,11 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute('UPDATE tasks SET is_active = 0 WHERE id = ?', (task_id,))
-            # Clean up any stale reminders first
-            await self._cleanup_stale_reminders()
-            
             conn.commit()
             conn.close()
+            
+            # Clean up any stale reminders
+            await self._cleanup_stale_reminders()
             return
             
         # Calculate next run for daily tasks
@@ -758,7 +764,7 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
                 logger.info(f"Processing due task: {task_id} - {title} for @{username}")
                 await self._send_task_reminder(task_id, title, username, user_id, chat_id, frequency)
                 
-            # Check for pending 5-minute reminders
+            # Check for pending 2-minute reminders
             cursor.execute('''
                 SELECT id, task_id, user_id, username, chat_id, task_title, 
                        frequency, reminder_count, max_reminders, next_reminder
@@ -799,6 +805,9 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
                     # Send reminder and schedule next one
                     await self._send_followup_reminder(reminder_id, task_id, username, user_id, 
                                                      chat_id, task_title, frequency, reminder_count)
+            
+            # Clean up any stale reminders first
+            await self._cleanup_stale_reminders()
             
             conn.commit()
             conn.close()
@@ -942,6 +951,8 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             logger.info(f"Sent follow-up reminder #{reminder_count + 1} to @{username}")
             
         except Exception as e:
+            logger.error(f"Failed to send follow-up reminder: {e}")
+            
     async def _cleanup_stale_reminders(self) -> None:
         """Clean up any stale reminders for users who have already responded."""
         try:
@@ -1021,15 +1032,6 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         background_thread.start()
         logger.info("Background task checker thread started successfully")
             
-    async def _periodic_task_check(self) -> None:
-        """Periodic task checker that runs every minute."""
-        while True:
-            try:
-                await self.check_scheduled_tasks()
-            except Exception as e:
-                logger.error(f"Error in periodic task check: {e}")
-            await asyncio.sleep(60)  # Check every minute for both tasks and reminders
-            
     def run(self) -> None:
         """Start the bot."""
         # Create application
@@ -1103,8 +1105,8 @@ def main():
     else:
         print("⚠️ Environment variables not found - using hardcoded values")
         # HARDCODED VALUES - REPLACE THESE WITH YOUR ACTUAL VALUES
-        BOT_TOKEN = "7812504300:AAFvj3xKHZERVPUxETzIEBSnqRKaM8goLms"
-        ADMIN_IDS = [1948521794,5738520540]  # Replace with your actual Telegram user ID
+        BOT_TOKEN = "PASTE_YOUR_BOT_TOKEN_HERE"
+        ADMIN_IDS = [123456789]  # Replace with your actual Telegram user ID
         
         # Validation check
         if BOT_TOKEN == "PASTE_YOUR_BOT_TOKEN_HERE":
