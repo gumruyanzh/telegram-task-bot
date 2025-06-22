@@ -617,26 +617,19 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             ''', (user_id, chat_id, task_info['title']))
             logger.info(f"REMOVED all reminders for user {user_id} task {task_id} after YES response")
             
-            # Update the message to show confirmation and hide buttons
+            # Send confirmation message (this will hide the buttons by sending a new message)
             try:
-                await query.edit_message_text(
-                    f"✅ CONFIRMED: Task Completed!\n\n"
-                    f"📋 Task: {task_info['title']}\n"
-                    f"👤 User: @{task_info['assignee_username']}\n"
-                    f"⏰ Responded at: {get_pst_now().strftime('%H:%M PST')}\n\n"
-                    f"🎉 Great job! All reminders for this task have been stopped."
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"✅ Task Complete!\n\n"
+                         f"📋 Task: {task_info['title']}\n"
+                         f"👤 User: @{task_info['assignee_username']}\n"
+                         f"⏰ Completed at: {get_pst_now().strftime('%H:%M PST')}\n\n"
+                         f"🎉 Great job! All reminders for this task have been stopped."
                 )
-                logger.info(f"Successfully updated message for YES response from user {user_id}")
+                logger.info(f"Successfully sent completion message for user {user_id}")
             except Exception as e:
-                logger.error(f"Failed to update message for YES response: {e}")
-                # Try to send a new message instead
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"✅ @{task_info['assignee_username']} confirmed completion of: {task_info['title']}"
-                    )
-                except Exception as e2:
-                    logger.error(f"Failed to send fallback message: {e2}")
+                logger.error(f"Failed to send completion message: {e}")
             
             # Update next run for recurring tasks
             await self._update_next_run(task_id, task_info['frequency'])
@@ -651,27 +644,20 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
                   task_info['title'], task_info['frequency'], next_reminder_utc))
             logger.info(f"SET UP 2-minute reminders for user {user_id} task {task_id} after NO response")
             
-            # Update the message to show confirmation and hide buttons
+            # Send confirmation message (this will hide the buttons by sending a new message)
             try:
-                await query.edit_message_text(
-                    f"📝 CONFIRMED: Task Not Completed\n\n"
-                    f"📋 Task: {task_info['title']}\n"
-                    f"👤 User: @{task_info['assignee_username']}\n"
-                    f"⏰ Responded at: {get_pst_now().strftime('%H:%M PST')}\n\n"
-                    f"💡 No worries! I'll remind you again in 2 minutes.\n"
-                    f"⏰ Reminders will continue every 2 minutes until you click YES."
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"📝 Task Postponed\n\n"
+                         f"📋 Task: {task_info['title']}\n"
+                         f"👤 User: @{task_info['assignee_username']}\n"
+                         f"⏰ Postponed at: {get_pst_now().strftime('%H:%M PST')}\n\n"
+                         f"💡 No worries! I'll remind you again in 2 minutes.\n"
+                         f"⏰ Reminders will continue every 2 minutes until you click YES."
                 )
-                logger.info(f"Successfully updated message for NO response from user {user_id}")
+                logger.info(f"Successfully sent postponement message for user {user_id}")
             except Exception as e:
-                logger.error(f"Failed to update message for NO response: {e}")
-                # Try to send a new message instead
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"📝 @{task_info['assignee_username']} responded NO to: {task_info['title']}"
-                    )
-                except Exception as e2:
-                    logger.error(f"Failed to send fallback message: {e2}")
+                logger.error(f"Failed to send postponement message: {e}")
             
             # DO NOT send additional message to avoid event loop issues
         conn.commit()
