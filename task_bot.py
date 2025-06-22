@@ -286,6 +286,12 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             
             reminders = cursor.fetchall()
             
+            # Get active pending responses
+            active_responses = []
+            for key, info in self.pending_responses.items():
+                if str(update.effective_chat.id) in key:
+                    active_responses.append(f"Task {info['task_id']}: {info['title'][:20]}... (@{info['assignee_username']})")
+            
             conn.close()
             
             debug_msg = f"🔧 Debug Information\n\n"
@@ -309,6 +315,13 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
                 debug_msg += f"• {task_title[:20]}... (@{username})\n"
                 debug_msg += f"  Next reminder: {next_rem_str}\n"
                 debug_msg += f"  Reminder count: {count}\n\n"
+            
+            debug_msg += f"⏳ Active Pending Responses ({len(active_responses)} total):\n"
+            for response in active_responses:
+                debug_msg += f"• {response}\n"
+            
+            if not active_responses:
+                debug_msg += "• None\n"
             
             # Split message if too long
             if len(debug_msg) > 4000:
@@ -538,7 +551,7 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         # Find pending task info
         pending_key = f"{user_id}_{chat_id}"
         if pending_key not in self.pending_responses:
-            await query.edit_message_text("⏰ This task reminder has expired.")
+            await query.edit_message_text("⏰ This task reminder has expired or already been responded to.")
             return
             
         task_info = self.pending_responses[pending_key]
@@ -557,20 +570,33 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             VALUES (?, ?, ?, ?)
         ''', (task_id, user_id, chat_id, response))
         
-        # Remove from pending responses
+        # Remove from pending responses IMMEDIATELY to prevent duplicate processing
         del self.pending_responses[pending_key]
         
         if response == 'yes':
-            # Task completed - remove any pending reminders
+            # Task completed - REMOVE ALL PENDING REMINDERS for this task and user
             cursor.execute('''
                 DELETE FROM pending_reminders 
                 WHERE task_id = ? AND user_id = ? AND chat_id = ?
             ''', (task_id, user_id, chat_id))
             
+            # Also remove any reminders for this user regardless of task (safety measure)
+            cursor.execute('''
+                DELETE FROM pending_reminders 
+                WHERE user_id = ? AND chat_id = ? AND task_title = ?
+            ''', (user_id, chat_id, task_info['title']))
+            
+            logger.info(f"REMOVED all reminders for user {user_id} task {task_id} after YES response")
+            
+            # Update the message to show confirmation and hide buttons
             await query.edit_message_text(
-                f"✅ Great! Task completed: {task_info['title']}\n\n"
-                f"Thank you for confirming! 🎉"
+                f"✅ CONFIRMED: Task Completed!\n\n"
+                f"📋 Task: {task_info['title']}\n"
+                f"👤 User: @{task_info['assignee_username']}\n"
+                f"⏰ Responded at: {get_pst_now().strftime('%H:%M PST')}\n\n"
+                f"🎉 Great job! All reminders for this task have been stopped."
             )
+            
             # Update next run for recurring tasks
             await self._update_next_run(task_id, task_info['frequency'])
             
@@ -585,14 +611,22 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             ''', (task_id, user_id, task_info['assignee_username'], chat_id, 
                   task_info['title'], task_info['frequency'], next_reminder_utc))
             
+            logger.info(f"SET UP 2-minute reminders for user {user_id} task {task_id} after NO response")
+            
+            # Update the message to show confirmation and hide buttons
             await query.edit_message_text(
-                f"📝 Task not completed: {task_info['title']}\n\n"
-                "💡 No worries! I'll remind you again in 2 minutes.\n"
-                "The reminder will keep coming every 2 minutes until completed."
+                f"📝 CONFIRMED: Task Not Completed\n\n"
+                f"📋 Task: {task_info['title']}\n"
+                f"👤 User: @{task_info['assignee_username']}\n"
+                f"⏰ Responded at: {get_pst_now().strftime('%H:%M PST')}\n\n"
+                f"💡 No worries! I'll remind you again in 2 minutes.\n"
+                f"⏰ Reminders will continue every 2 minutes until you click YES."
             )
             
         conn.commit()
         conn.close()
+        
+        logger.info(f"User {user_id} responded '{response}' to task {task_id}: {task_info['title']}")
         
     async def _handle_text_response(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle text responses for backwards compatibility."""
@@ -667,6 +701,9 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute('UPDATE tasks SET is_active = 0 WHERE id = ?', (task_id,))
+            # Clean up any stale reminders first
+            await self._cleanup_stale_reminders()
+            
             conn.commit()
             conn.close()
             return
@@ -747,10 +784,18 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
                             chat_id=chat_id,
                             text=f"⏰ Final Notice\n\n@{username}, I've reminded you {max_reminders} times about:\n{task_title}\n\nI'll stop reminding you now. Please complete when possible! 😊"
                         )
-                        logger.info(f"Sent final notice to @{username}")
+                        logger.info(f"Sent final notice to @{username} after {max_reminders} reminders")
                     except Exception as e:
                         logger.error(f"Failed to send final reminder: {e}")
                 else:
+                    # Check if this reminder is still needed (user might have responded via another message)
+                    pending_key = f"{user_id}_{chat_id}"
+                    if pending_key not in self.pending_responses:
+                        # User already responded, remove this reminder
+                        cursor.execute('DELETE FROM pending_reminders WHERE id = ?', (reminder_id,))
+                        logger.info(f"Removed stale reminder {reminder_id} - user already responded")
+                        continue
+                    
                     # Send reminder and schedule next one
                     await self._send_followup_reminder(reminder_id, task_id, username, user_id, 
                                                      chat_id, task_title, frequency, reminder_count)
@@ -897,7 +942,42 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             logger.info(f"Sent follow-up reminder #{reminder_count + 1} to @{username}")
             
         except Exception as e:
-            logger.error(f"Failed to send follow-up reminder: {e}")
+    async def _cleanup_stale_reminders(self) -> None:
+        """Clean up any stale reminders for users who have already responded."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Get all pending reminders
+            cursor.execute('''
+                SELECT id, user_id, chat_id, task_title
+                FROM pending_reminders
+            ''')
+            
+            reminders = cursor.fetchall()
+            cleaned_count = 0
+            
+            for reminder_id, user_id, chat_id, task_title in reminders:
+                pending_key = f"{user_id}_{chat_id}"
+                
+                # If user is not in pending responses, they've already responded
+                if pending_key not in self.pending_responses:
+                    cursor.execute('DELETE FROM pending_reminders WHERE id = ?', (reminder_id,))
+                    cleaned_count += 1
+                    logger.debug(f"Cleaned stale reminder {reminder_id} for user {user_id}")
+            
+            if cleaned_count > 0:
+                logger.info(f"Cleaned up {cleaned_count} stale reminders")
+                
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Error cleaning stale reminders: {e}")
+            try:
+                conn.close()
+            except:
+                pass
 
     async def _clear_user_reminders(self, user_id: int, chat_id: int) -> None:
         """Clear all pending reminders for a user when they respond yes."""
