@@ -721,6 +721,13 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         # Add error handler
         async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             """Handle errors."""
+            error_message = str(context.error)
+            
+            if "Conflict: terminated by other getUpdates request" in error_message:
+                logger.warning("Another bot instance is running. This is normal during deployments.")
+                # Don't log this as an error since it's expected during deployments
+                return
+            
             logger.error(f"Exception while handling an update: {context.error}")
             
         self.application.add_error_handler(error_handler)
