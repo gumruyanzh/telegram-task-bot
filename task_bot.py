@@ -23,7 +23,7 @@ from telegram.ext import (
     ContextTypes, filters
 )
 
-# Configure logging
+# Configure logging a
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
