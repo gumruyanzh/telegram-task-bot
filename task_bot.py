@@ -557,10 +557,35 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         # Find pending task info
         pending_key = f"{user_id}_{chat_id}"
         if pending_key not in self.pending_responses:
-            await query.edit_message_text("⏰ This task reminder has expired or already been responded to.")
-            return
+            # User might be responding to a follow-up reminder
+            # Check if there's a pending reminder for this user and task
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT task_title, assignee_username, frequency
+                FROM pending_reminders 
+                WHERE task_id = ? AND user_id = ? AND chat_id = ?
+            ''', (task_id, user_id, chat_id))
+            reminder_info = cursor.fetchone()
+            conn.close()
             
-        task_info = self.pending_responses[pending_key]
+            if reminder_info:
+                # User is responding to a follow-up reminder, add them back to pending_responses
+                task_title, assignee_username, frequency = reminder_info
+                self.pending_responses[pending_key] = {
+                    'task_id': task_id,
+                    'title': task_title,
+                    'assignee_username': assignee_username,
+                    'assignee_user_id': user_id,
+                    'chat_id': chat_id,
+                    'frequency': frequency
+                }
+                task_info = self.pending_responses[pending_key]
+            else:
+                await query.edit_message_text("⏰ This task reminder has expired or already been responded to.")
+                return
+        else:
+            task_info = self.pending_responses[pending_key]
         
         # Verify task ID matches
         if task_info['task_id'] != task_id:
@@ -628,14 +653,7 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
                 f"💡 No worries! I'll remind you again in 2 minutes.\n"
                 f"⏰ Reminders will continue every 2 minutes until you click YES."
             )
-            # Send a new confirmation message in the group
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=(
-                    f"📝 @{task_info['assignee_username']} responded NO to: {task_info['title']}\n"
-                    f"They will be reminded again in 2 minutes."
-                )
-            )
+            # DO NOT send additional message to avoid event loop issues
         conn.commit()
         conn.close()
         logger.info(f"User {user_id} responded '{response}' to task {task_id}: {task_info['title']}")
@@ -699,14 +717,8 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
                 f"📝 Task not completed: {task_info['title']}\n"
                 "💡 I'll remind you again in 2 minutes until it's done!"
             )
-            # Send a new confirmation message in the group
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=(
-                    f"📝 @{task_info['assignee_username']} responded NO to: {task_info['title']}\n"
-                    f"They will be reminded again in 2 minutes."
-                )
-            )
+            # DO NOT send additional message to avoid event loop issues
+            # DO NOT remove from pending_responses for NO - keep them there so reminders continue
         conn.commit()
         conn.close()
             
@@ -817,9 +829,6 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
                     # Send reminder and schedule next one
                     await self._send_followup_reminder(reminder_id, task_id, username, user_id, 
                                                      chat_id, task_title, frequency, reminder_count)
-            
-            # Clean up any stale reminders first
-            await self._cleanup_stale_reminders()
             
             conn.commit()
             conn.close()
@@ -935,16 +944,8 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
                     reply_markup=reply_markup
                 )
             
-            # Add back to pending responses
-            pending_key = f"{user_id}_{chat_id}"
-            self.pending_responses[pending_key] = {
-                'task_id': task_id,
-                'title': task_title,
-                'assignee_username': username,
-                'assignee_user_id': user_id,
-                'chat_id': chat_id,
-                'frequency': frequency
-            }
+            # DO NOT add back to pending responses immediately - only when user responds
+            # This prevents the cleanup function from removing the reminder
             
             # Schedule next reminder in 2 minutes
             conn = sqlite3.connect(self.db_path)
