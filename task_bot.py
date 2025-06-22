@@ -111,7 +111,7 @@ class TaskBot:
             )
         ''')
         
-        # Pending reminders table for 5-minute follow-ups
+        # Pending reminders table for 2-minute follow-ups
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS pending_reminders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,7 +123,7 @@ class TaskBot:
                 frequency TEXT,
                 next_reminder TIMESTAMP,
                 reminder_count INTEGER DEFAULT 0,
-                max_reminders INTEGER DEFAULT 12,
+                max_reminders INTEGER DEFAULT 30,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (task_id) REFERENCES tasks (id)
             )
@@ -505,7 +505,97 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         )
         
     async def handle_task_response(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle user responses to task completion queries."""
+        """Handle user responses to task completion queries via callback buttons."""
+        if update.callback_query:
+            await self._handle_callback_query(update, context)
+        elif update.message:
+            # Still handle text responses for backwards compatibility
+            await self._handle_text_response(update, context)
+            
+    async def _handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle button clicks for task responses."""
+        query = update.callback_query
+        await query.answer()  # Acknowledge the button click
+        
+        if not query.data or not query.from_user:
+            return
+            
+        user_id = query.from_user.id
+        chat_id = query.message.chat_id
+        
+        # Parse callback data: "task_response_TASKID_RESPONSE"
+        if not query.data.startswith("task_response_"):
+            return
+            
+        try:
+            parts = query.data.split("_")
+            task_id = int(parts[2])
+            response = parts[3]  # "yes" or "no"
+        except (IndexError, ValueError):
+            await query.edit_message_text("❌ Invalid response data.")
+            return
+        
+        # Find pending task info
+        pending_key = f"{user_id}_{chat_id}"
+        if pending_key not in self.pending_responses:
+            await query.edit_message_text("⏰ This task reminder has expired.")
+            return
+            
+        task_info = self.pending_responses[pending_key]
+        
+        # Verify task ID matches
+        if task_info['task_id'] != task_id:
+            await query.edit_message_text("❌ Task ID mismatch.")
+            return
+        
+        # Save response to database
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO task_responses (task_id, user_id, chat_id, response)
+            VALUES (?, ?, ?, ?)
+        ''', (task_id, user_id, chat_id, response))
+        
+        # Remove from pending responses
+        del self.pending_responses[pending_key]
+        
+        if response == 'yes':
+            # Task completed - remove any pending reminders
+            cursor.execute('''
+                DELETE FROM pending_reminders 
+                WHERE task_id = ? AND user_id = ? AND chat_id = ?
+            ''', (task_id, user_id, chat_id))
+            
+            await query.edit_message_text(
+                f"✅ Great! Task completed: {task_info['title']}\n\n"
+                f"Thank you for confirming! 🎉"
+            )
+            # Update next run for recurring tasks
+            await self._update_next_run(task_id, task_info['frequency'])
+            
+        else:  # response == 'no'
+            # Task not completed - set up persistent 2-minute reminders
+            next_reminder_utc = datetime.utcnow() + timedelta(minutes=2)
+            
+            cursor.execute('''
+                INSERT OR REPLACE INTO pending_reminders 
+                (task_id, user_id, username, chat_id, task_title, frequency, next_reminder, reminder_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            ''', (task_id, user_id, task_info['assignee_username'], chat_id, 
+                  task_info['title'], task_info['frequency'], next_reminder_utc))
+            
+            await query.edit_message_text(
+                f"📝 Task not completed: {task_info['title']}\n\n"
+                "💡 No worries! I'll remind you again in 2 minutes.\n"
+                "The reminder will keep coming every 2 minutes until completed."
+            )
+            
+        conn.commit()
+        conn.close()
+        
+    async def _handle_text_response(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle text responses for backwards compatibility."""
         if not update.message or not update.effective_user or not update.effective_chat:
             return
             
@@ -522,7 +612,7 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         if message_text not in ['yes', 'no']:
             return  # Not a valid response
             
-        # Get pending task info
+        # Convert to callback-like handling
         task_info = self.pending_responses[pending_key]
         task_id = task_info['task_id']
         
@@ -552,8 +642,8 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             await self._update_next_run(task_id, task_info['frequency'])
             
         else:  # message_text == 'no'
-            # Task not completed - set up persistent 5-minute reminders
-            next_reminder_utc = datetime.utcnow() + timedelta(minutes=5)
+            # Task not completed - set up persistent 2-minute reminders
+            next_reminder_utc = datetime.utcnow() + timedelta(minutes=2)
             
             cursor.execute('''
                 INSERT OR REPLACE INTO pending_reminders 
@@ -563,8 +653,8 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
                   task_info['title'], task_info['frequency'], next_reminder_utc))
             
             await update.message.reply_text(
-                f"❌ Task not completed: {task_info['title']}\n"
-                "💡 I'll remind you again in 5 minutes until it's done!"
+                f"📝 Task not completed: {task_info['title']}\n"
+                "💡 I'll remind you again in 2 minutes until it's done!"
             )
             
         conn.commit()
@@ -677,15 +767,25 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         
     async def _send_task_reminder(self, task_id: int, title: str, username: str, 
                                 user_id: int, chat_id: int, frequency: str) -> None:
-        """Send initial task reminder."""
+        """Send initial task reminder with YES/NO buttons."""
         try:
             logger.info(f"Sending task reminder for task {task_id}: {title} to @{username} in chat {chat_id}")
             
-            message = f"⏰ Task Reminder\n\n@{username}, it's time for your task:\n\n{title}\n\nHave you completed it? Please reply with 'yes' or 'no'."
+            message = f"⏰ Task Reminder\n\n@{username}, it's time for your task:\n\n{title}\n\nHave you completed it?"
+            
+            # Create inline keyboard with YES/NO buttons
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ YES", callback_data=f"task_response_{task_id}_yes"),
+                    InlineKeyboardButton("❌ NO", callback_data=f"task_response_{task_id}_no")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             
             await self.application.bot.send_message(
                 chat_id=chat_id,
-                text=message
+                text=message,
+                reply_markup=reply_markup
             )
             
             logger.info(f"Task reminder sent successfully to @{username}")
@@ -701,11 +801,11 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
                 'frequency': frequency
             }
             
-            # Set up automatic 5-minute reminder if no response
+            # Set up automatic 2-minute reminder if no response
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            next_reminder_utc = datetime.utcnow() + timedelta(minutes=5)
+            next_reminder_utc = datetime.utcnow() + timedelta(minutes=2)
             
             cursor.execute('''
                 INSERT OR REPLACE INTO pending_reminders 
@@ -740,21 +840,31 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
     async def _send_followup_reminder(self, reminder_id: int, task_id: int, username: str, 
                                     user_id: int, chat_id: int, task_title: str, 
                                     frequency: str, reminder_count: int) -> None:
-        """Send follow-up reminder and schedule next one."""
+        """Send follow-up reminder with YES/NO buttons and schedule next one."""
         try:
             # Choose message based on reminder count
             if reminder_count == 0:
-                message = f"🔔 Reminder\n\n@{username}, you haven't responded yet about:\n{task_title}\n\nPlease reply 'yes' or 'no'"
-            elif reminder_count < 3:
-                message = f"🔔 Follow-up #{reminder_count + 1}\n\n@{username}, still waiting for your response about:\n{task_title}\n\nPlease reply 'yes' or 'no'"
-            elif reminder_count < 6:
-                message = f"⚠️ Persistent Reminder\n\n@{username}, this is reminder #{reminder_count + 1} for:\n{task_title}\n\nPlease complete and reply 'yes', or 'no' if you need help!"
+                message = f"🔔 Reminder\n\n@{username}, you haven't responded yet about:\n{task_title}\n\nPlease click one of the buttons below:"
+            elif reminder_count < 5:
+                message = f"🔔 Follow-up #{reminder_count + 1}\n\n@{username}, still waiting for your response about:\n{task_title}\n\nPlease choose an option:"
+            elif reminder_count < 15:
+                message = f"⚠️ Persistent Reminder\n\n@{username}, this is reminder #{reminder_count + 1} for:\n{task_title}\n\nPlease complete and click YES, or click NO if you need help!"
             else:
-                message = f"🚨 Urgent Reminder #{reminder_count + 1}\n\n@{username}, this task needs attention:\n{task_title}\n\nPlease respond 'yes' or 'no' - I'll keep reminding every 5 minutes!"
+                message = f"🚨 Urgent Reminder #{reminder_count + 1}\n\n@{username}, this task needs attention:\n{task_title}\n\nPlease respond by clicking YES or NO!"
+            
+            # Create inline keyboard with YES/NO buttons
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ YES", callback_data=f"task_response_{task_id}_yes"),
+                    InlineKeyboardButton("❌ NO", callback_data=f"task_response_{task_id}_no")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             
             await self.application.bot.send_message(
                 chat_id=chat_id,
-                text=message
+                text=message,
+                reply_markup=reply_markup
             )
             
             # Add back to pending responses
@@ -768,11 +878,11 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
                 'frequency': frequency
             }
             
-            # Schedule next reminder
+            # Schedule next reminder in 2 minutes
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            next_reminder_utc = datetime.utcnow() + timedelta(minutes=5)
+            next_reminder_utc = datetime.utcnow() + timedelta(minutes=2)
             new_count = reminder_count + 1
             
             cursor.execute('''
@@ -783,6 +893,8 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             
             conn.commit()
             conn.close()
+            
+            logger.info(f"Sent follow-up reminder #{reminder_count + 1} to @{username}")
             
         except Exception as e:
             logger.error(f"Failed to send follow-up reminder: {e}")
@@ -866,10 +978,13 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         self.application.add_handler(CommandHandler("tasks", self.list_tasks_command))
         self.application.add_handler(CommandHandler("removetask", self.remove_task_command))
         
-        # Handler for task responses (yes/no messages)
+        # Handler for task responses (yes/no messages and button clicks)
         self.application.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_task_response)
         )
+        
+        # Handler for inline keyboard callbacks
+        self.application.add_handler(CallbackQueryHandler(self.handle_task_response))
         
         # Start the bot
         logger.info("Starting Task Management Bot...")
