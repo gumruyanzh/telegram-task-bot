@@ -34,15 +34,10 @@ logger = logging.getLogger(__name__)
 def get_pst_now() -> datetime:
     """Get current time in PST (UTC-8) or PDT (UTC-7)."""
     utc_now = datetime.utcnow()
-    # Simple PST offset (this handles most cases)
-    pst_offset = timedelta(hours=-8)  # PST is UTC-8
+    # PST is UTC-8, but we need to check if it's daylight saving time
+    # For now, using PDT (UTC-7) since it's summer
+    pst_offset = timedelta(hours=-7)  # PDT is UTC-7 (summer time)
     return utc_now + pst_offset
-
-def pst_datetime_to_utc(year: int, month: int, day: int, hour: int, minute: int) -> datetime:
-    """Convert PST date/time to UTC for database storage."""
-    pst_time = datetime(year, month, day, hour, minute)
-    # Convert PST to UTC (add 8 hours)
-    return pst_time + timedelta(hours=8)
 
 def utc_to_pst_display(utc_time) -> str:
     """Convert UTC time to PST for display."""
@@ -52,8 +47,8 @@ def utc_to_pst_display(utc_time) -> str:
         else:
             utc_dt = utc_time
         
-        # Convert UTC to PST (subtract 8 hours)
-        pst_dt = utc_dt - timedelta(hours=8)
+        # Convert UTC to PDT (subtract 7 hours in summer)
+        pst_dt = utc_dt - timedelta(hours=7)
         return pst_dt.strftime('%Y-%m-%d %H:%M PST')
     except:
         return "Not scheduled"
@@ -190,8 +185,8 @@ class TaskBot:
             if next_run_pst <= now_pst:
                 next_run_pst += timedelta(days=1)
         
-        # Convert to UTC for database storage (add 8 hours)
-        return next_run_pst + timedelta(hours=8)
+        # Convert to UTC for database storage (add 7 hours for PDT)
+        return next_run_pst + timedelta(hours=7)
         
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
@@ -323,7 +318,24 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             
         except Exception as e:
             await update.message.reply_text(f"❌ Debug error: {str(e)}")
-            logger.error(f"Debug command error: {e}")
+    async def test_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /test command to immediately trigger task reminders for testing."""
+        if not update.message or not update.effective_user:
+            return
+            
+        user_id = update.effective_user.id
+        
+        # Check if user is admin
+        if not self._is_admin(user_id):
+            await update.message.reply_text("❌ Only admins can use test commands.")
+            return
+            
+        await update.message.reply_text("🧪 Manually triggering task checker...")
+        
+        # Force check for scheduled tasks
+        await self.check_scheduled_tasks()
+        
+        await update.message.reply_text("✅ Task check completed. Check logs for details.")
         
     async def create_task_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /createtask command."""
@@ -849,6 +861,7 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("debug", self.debug_command))
+        self.application.add_handler(CommandHandler("test", self.test_command))
         self.application.add_handler(CommandHandler("createtask", self.create_task_command))
         self.application.add_handler(CommandHandler("tasks", self.list_tasks_command))
         self.application.add_handler(CommandHandler("removetask", self.remove_task_command))
