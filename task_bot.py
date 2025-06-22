@@ -786,11 +786,13 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
                     # Max reminders reached, stop reminding
                     cursor.execute('DELETE FROM pending_reminders WHERE id = ?', (reminder_id,))
                     try:
-                        await self.application.bot.send_message(
-                            chat_id=chat_id,
-                            text=f"⏰ Final Notice\n\n@{username}, I've reminded you {max_reminders} times about:\n{task_title}\n\nI'll stop reminding you now. Please complete when possible! 😊"
-                        )
-                        logger.info(f"Sent final notice to @{username} after {max_reminders} reminders")
+                        if self.application and self.application.bot:
+                            
+                            await self.application.bot.send_message(
+                                chat_id=chat_id,
+                                text=f"⏰ Final Notice\n\n@{username}, I've reminded you {max_reminders} times about:\n{task_title}\n\nI'll stop reminding you now. Please complete when possible! 😊"
+                            )
+                            logger.info(f"Sent final notice to @{username} after {max_reminders} reminders")
                     except Exception as e:
                         logger.error(f"Failed to send final reminder: {e}")
                 else:
@@ -836,11 +838,12 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            await self.application.bot.send_message(
-                chat_id=chat_id,
-                text=message,
-                reply_markup=reply_markup
-            )
+            if self.application and self.application.bot:
+                await self.application.bot.send_message(
+                    chat_id=chat_id,
+                    text=message,
+                    reply_markup=reply_markup
+                )
             
             logger.info(f"Task reminder sent successfully to @{username}")
             
@@ -915,11 +918,12 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            await self.application.bot.send_message(
-                chat_id=chat_id,
-                text=message,
-                reply_markup=reply_markup
-            )
+            if self.application and self.application.bot:
+                await self.application.bot.send_message(
+                    chat_id=chat_id,
+                    text=message,
+                    reply_markup=reply_markup
+                )
             
             # Add back to pending responses
             pending_key = f"{user_id}_{chat_id}"
@@ -951,8 +955,12 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             logger.info(f"Sent follow-up reminder #{reminder_count + 1} to @{username}")
             
         except Exception as e:
-            logger.error(f"Failed to send follow-up reminder: {e}")
-            
+            logger.error(f"Failed to send follow-up reminder for reminder {reminder_id}: {e}")
+            try:
+                conn.close()
+            except:
+                pass
+
     async def _cleanup_stale_reminders(self) -> None:
         """Clean up any stale reminders for users who have already responded."""
         try:
