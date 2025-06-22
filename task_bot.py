@@ -218,38 +218,38 @@ Need help? Use /help for detailed instructions!
         
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /help command."""
-        help_text = """📋 *Task Management Bot Help*
+        help_text = """📋 Task Management Bot Help
 
-*Creating Tasks:*
-`/createtask @john Clean office 09:00 daily`
-`/createtask @jane Submit report 17:30 once`
+Creating Tasks:
+/createtask @john Clean office 09:00 daily
+/createtask @jane Submit report 17:30 once
 
-*Managing Tasks:*
-• `/tasks` - View all active tasks with their IDs
-• `/removetask 5` - Remove task with ID 5
+Managing Tasks:
+• /tasks - View all active tasks with their IDs
+• /removetask 5 - Remove task with ID 5
 
-*Task Responses:*
+Task Responses:
 When you're mentioned for a task, simply reply:
 • "yes" - Task completed ✅
 • "no" - Task not completed ❌
 
-*Time Formats:*
+Time Formats:
 • 24-hour: 09:00, 17:30, 23:45 (PST)
 • 12-hour: 9:00AM, 5:30PM, 11:45PM (PST)
 
-*Frequency Options:*
-• `once` - One-time task
-• `daily` - Repeats every day at the specified time
+Frequency Options:
+• once - One-time task
+• daily - Repeats every day at the specified time
 
-*Admin Features:*
+Admin Features:
 Only authorized admins can create and remove tasks.
 
-*Automatic Follow-ups:*
+Automatic Follow-ups:
 If you don't respond or say "no", the bot will ask again after 5 minutes.
 
-*Note:* All times are in Pacific Standard Time (PST/PDT)."""
+Note: All times are in Pacific Standard Time (PST/PDT)."""
         
-        await update.message.reply_text(help_text, parse_mode='Markdown')
+        await update.message.reply_text(help_text)
         
     async def create_task_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /createtask command."""
@@ -315,13 +315,12 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
         
         await update.message.reply_text(
             f"✅ Task created successfully!\n\n"
-            f"*Task ID:* {task_id}\n"
-            f"*Assignee:* @{username}\n"
-            f"*Description:* {description}\n"
-            f"*Time:* {parsed_time} PST\n"
-            f"*Frequency:* {frequency}\n"
-            f"*Next run:* {utc_to_pst_display(next_run)}",
-            parse_mode='Markdown'
+            f"Task ID: {task_id}\n"
+            f"Assignee: @{username}\n"
+            f"Description: {description}\n"
+            f"Time: {parsed_time} PST\n"
+            f"Frequency: {frequency}\n"
+            f"Next run: {utc_to_pst_display(next_run)}"
         )
         
     async def list_tasks_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -344,7 +343,7 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
             await update.message.reply_text("📝 No active tasks found.")
             return
             
-        message = "📋 *Active Tasks:*\n\n"
+        message = "📋 Active Tasks:\n\n"
         
         for task in tasks:
             task_id, title, username, time, freq, next_run, active = task
@@ -354,11 +353,11 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
             else:
                 next_run_str = "Not scheduled"
                 
-            message += f"*ID {task_id}:* {title}\n"
+            message += f"ID {task_id}: {title}\n"
             message += f"👤 @{username} | ⏰ {time} PST | 🔄 {freq}\n"
             message += f"📅 Next: {next_run_str}\n\n"
             
-        await update.message.reply_text(message, parse_mode='Markdown')
+        await update.message.reply_text(message)
         
     async def remove_task_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /removetask command."""
@@ -406,9 +405,8 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
         title, username = task
         await update.message.reply_text(
             f"✅ Task removed successfully!\n\n"
-            f"*Task:* {title}\n"
-            f"*Was assigned to:* @{username}",
-            parse_mode='Markdown'
+            f"Task: {title}\n"
+            f"Was assigned to: @{username}"
         )
         
     async def handle_task_response(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -551,8 +549,7 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
                 try:
                     await self.application.bot.send_message(
                         chat_id=chat_id,
-                        text=f"⏰ *Final Notice*\n\n@{username}, I've reminded you {max_reminders} times about:\n*{task_title}*\n\nI'll stop reminding you now. Please complete when possible! 😊",
-                        parse_mode='Markdown'
+                        text=f"⏰ Final Notice\n\n@{username}, I've reminded you {max_reminders} times about:\n{task_title}\n\nI'll stop reminding you now. Please complete when possible! 😊"
                     )
                 except Exception as e:
                     logger.error(f"Failed to send final reminder: {e}")
@@ -568,12 +565,11 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
                                 user_id: int, chat_id: int, frequency: str) -> None:
         """Send initial task reminder."""
         try:
-            message = f"⏰ *Task Reminder*\n\n@{username}, it's time for your task:\n\n*{title}*\n\nHave you completed it? Please reply with 'yes' or 'no'."
+            message = f"⏰ Task Reminder\n\n@{username}, it's time for your task:\n\n{title}\n\nHave you completed it? Please reply with 'yes' or 'no'."
             
             await self.application.bot.send_message(
                 chat_id=chat_id,
-                text=message,
-                parse_mode='Markdown'
+                text=message
             )
             
             # Add to pending responses
@@ -612,18 +608,17 @@ If you don't respond or say "no", the bot will ask again after 5 minutes.
         try:
             # Choose message based on reminder count
             if reminder_count == 0:
-                message = f"🔔 *Reminder*\n\n@{username}, you haven't responded yet about:\n*{task_title}*\n\nPlease reply 'yes' or 'no'"
+                message = f"🔔 Reminder\n\n@{username}, you haven't responded yet about:\n{task_title}\n\nPlease reply 'yes' or 'no'"
             elif reminder_count < 3:
-                message = f"🔔 *Follow-up #{reminder_count + 1}*\n\n@{username}, still waiting for your response about:\n*{task_title}*\n\nPlease reply 'yes' or 'no'"
+                message = f"🔔 Follow-up #{reminder_count + 1}\n\n@{username}, still waiting for your response about:\n{task_title}\n\nPlease reply 'yes' or 'no'"
             elif reminder_count < 6:
-                message = f"⚠️ *Persistent Reminder*\n\n@{username}, this is reminder #{reminder_count + 1} for:\n*{task_title}*\n\nPlease complete and reply 'yes', or 'no' if you need help!"
+                message = f"⚠️ Persistent Reminder\n\n@{username}, this is reminder #{reminder_count + 1} for:\n{task_title}\n\nPlease complete and reply 'yes', or 'no' if you need help!"
             else:
-                message = f"🚨 *Urgent Reminder #{reminder_count + 1}*\n\n@{username}, this task needs attention:\n*{task_title}*\n\nPlease respond 'yes' or 'no' - I'll keep reminding every 5 minutes!"
+                message = f"🚨 Urgent Reminder #{reminder_count + 1}\n\n@{username}, this task needs attention:\n{task_title}\n\nPlease respond 'yes' or 'no' - I'll keep reminding every 5 minutes!"
             
             await self.application.bot.send_message(
                 chat_id=chat_id,
-                text=message,
-                parse_mode='Markdown'
+                text=message
             )
             
             # Add back to pending responses
