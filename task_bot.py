@@ -781,7 +781,7 @@ def main():
     else:
         print("⚠️ Environment variables not found - using hardcoded values")
         # HARDCODED VALUES - REPLACE THESE WITH YOUR ACTUAL VALUES
-        BOT_TOKEN = "7812504300:AAEuRtWbG2IUcfKAPYdg1ZBThd5mKlWJPWI"
+        BOT_TOKEN = "7812504300:AAFvj3xKHZERVPUxETzIEBSnqRKaM8goLms"
         ADMIN_IDS = [1948521794,5738520540]  # Replace with your actual Telegram user ID
         
         # Validation check
