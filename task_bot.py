@@ -218,6 +218,9 @@ Need help? Use /help for detailed instructions!
         
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /help command."""
+        if not update.message:
+            return
+            
         help_text = """📋 Task Management Bot Help
 
 Creating Tasks:
@@ -253,6 +256,9 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         
     async def create_task_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /createtask command."""
+        if not update.message or not update.effective_user:
+            return
+            
         user_id = update.effective_user.id
         
         # Check if user is admin
@@ -325,6 +331,9 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         
     async def list_tasks_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /tasks command."""
+        if not update.message or not update.effective_chat:
+            return
+            
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -361,6 +370,9 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         
     async def remove_task_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /removetask command."""
+        if not update.message or not update.effective_user or not update.effective_chat:
+            return
+            
         user_id = update.effective_user.id
         
         # Check if user is admin
@@ -411,6 +423,9 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         
     async def handle_task_response(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle user responses to task completion queries."""
+        if not update.message or not update.effective_user or not update.effective_chat:
+            return
+            
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         message_text = update.message.text.lower().strip()
@@ -702,6 +717,13 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         """Start the bot."""
         # Create application
         self.application = Application.builder().token(self.token).build()
+        
+        # Add error handler
+        async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+            """Handle errors."""
+            logger.error(f"Exception while handling an update: {context.error}")
+            
+        self.application.add_error_handler(error_handler)
         
         # Add handlers
         self.application.add_handler(CommandHandler("start", self.start_command))
