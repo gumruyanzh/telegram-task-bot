@@ -562,7 +562,7 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT task_title, assignee_username, frequency
+                SELECT task_title, username, frequency
                 FROM pending_reminders 
                 WHERE task_id = ? AND user_id = ? AND chat_id = ?
             ''', (task_id, user_id, chat_id))
@@ -571,11 +571,11 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             
             if reminder_info:
                 # User is responding to a follow-up reminder, add them back to pending_responses
-                task_title, assignee_username, frequency = reminder_info
+                task_title, username, frequency = reminder_info
                 self.pending_responses[pending_key] = {
                     'task_id': task_id,
                     'title': task_title,
-                    'assignee_username': assignee_username,
+                    'assignee_username': username,
                     'assignee_user_id': user_id,
                     'chat_id': chat_id,
                     'frequency': frequency
@@ -616,22 +616,28 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
                 WHERE user_id = ? AND chat_id = ? AND task_title = ?
             ''', (user_id, chat_id, task_info['title']))
             logger.info(f"REMOVED all reminders for user {user_id} task {task_id} after YES response")
+            
             # Update the message to show confirmation and hide buttons
-            await query.edit_message_text(
-                f"✅ CONFIRMED: Task Completed!\n\n"
-                f"📋 Task: {task_info['title']}\n"
-                f"👤 User: @{task_info['assignee_username']}\n"
-                f"⏰ Responded at: {get_pst_now().strftime('%H:%M PST')}\n\n"
-                f"🎉 Great job! All reminders for this task have been stopped."
-            )
-            # Send a new confirmation message in the group
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=(
-                    f"✅ @{task_info['assignee_username']} confirmed completion of: {task_info['title']}\n"
-                    f"No more reminders will be sent."
+            try:
+                await query.edit_message_text(
+                    f"✅ CONFIRMED: Task Completed!\n\n"
+                    f"📋 Task: {task_info['title']}\n"
+                    f"👤 User: @{task_info['assignee_username']}\n"
+                    f"⏰ Responded at: {get_pst_now().strftime('%H:%M PST')}\n\n"
+                    f"🎉 Great job! All reminders for this task have been stopped."
                 )
-            )
+                logger.info(f"Successfully updated message for YES response from user {user_id}")
+            except Exception as e:
+                logger.error(f"Failed to update message for YES response: {e}")
+                # Try to send a new message instead
+                try:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"✅ @{task_info['assignee_username']} confirmed completion of: {task_info['title']}"
+                    )
+                except Exception as e2:
+                    logger.error(f"Failed to send fallback message: {e2}")
+            
             # Update next run for recurring tasks
             await self._update_next_run(task_id, task_info['frequency'])
         else:  # response == 'no'
@@ -644,15 +650,29 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             ''', (task_id, user_id, task_info['assignee_username'], chat_id, 
                   task_info['title'], task_info['frequency'], next_reminder_utc))
             logger.info(f"SET UP 2-minute reminders for user {user_id} task {task_id} after NO response")
+            
             # Update the message to show confirmation and hide buttons
-            await query.edit_message_text(
-                f"📝 CONFIRMED: Task Not Completed\n\n"
-                f"📋 Task: {task_info['title']}\n"
-                f"👤 User: @{task_info['assignee_username']}\n"
-                f"⏰ Responded at: {get_pst_now().strftime('%H:%M PST')}\n\n"
-                f"💡 No worries! I'll remind you again in 2 minutes.\n"
-                f"⏰ Reminders will continue every 2 minutes until you click YES."
-            )
+            try:
+                await query.edit_message_text(
+                    f"📝 CONFIRMED: Task Not Completed\n\n"
+                    f"📋 Task: {task_info['title']}\n"
+                    f"👤 User: @{task_info['assignee_username']}\n"
+                    f"⏰ Responded at: {get_pst_now().strftime('%H:%M PST')}\n\n"
+                    f"💡 No worries! I'll remind you again in 2 minutes.\n"
+                    f"⏰ Reminders will continue every 2 minutes until you click YES."
+                )
+                logger.info(f"Successfully updated message for NO response from user {user_id}")
+            except Exception as e:
+                logger.error(f"Failed to update message for NO response: {e}")
+                # Try to send a new message instead
+                try:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"📝 @{task_info['assignee_username']} responded NO to: {task_info['title']}"
+                    )
+                except Exception as e2:
+                    logger.error(f"Failed to send fallback message: {e2}")
+            
             # DO NOT send additional message to avoid event loop issues
         conn.commit()
         conn.close()
