@@ -71,6 +71,8 @@ class TaskBot:
         return user_id in self.admin_ids
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.message:
+            return
         await update.message.reply_text(
             "Welcome! Admins can create tasks with /createtask @username description time frequency (e.g. /createtask @john Take out trash 14:00 daily)."
         )
@@ -98,14 +100,22 @@ class TaskBot:
         if frequency not in ["once", "daily"]:
             await update.message.reply_text("❌ Frequency must be 'once' or 'daily'.")
             return
-        # Get user id from username (must be in chat)
+        # Get user id from username - simplified approach for demo
+        # In production, you'd want to maintain a user database or use different approach
         chat = update.effective_chat
         assignee_id = None
-        async for member in chat.get_administrators():
-            if member.user.username and member.user.username.lower() == username.lower():
-                assignee_id = member.user.id
+        try:
+            # Get chat administrators
+            administrators = await chat.get_administrators()
+            for member in administrators:
+                if member.user.username and member.user.username.lower() == username.lower():
+                    assignee_id = member.user.id
+                    break
+        except Exception as e:
+            logger.error(f"Error getting administrators: {e}")
+        
         if not assignee_id:
-            await update.message.reply_text(f"❌ User @{username} not found in this chat (must be an admin for demo).")
+            await update.message.reply_text(f"❌ User @{username} not found in this chat administrators.")
             return
         # Save task
         conn = sqlite3.connect(DB_PATH)
@@ -120,6 +130,8 @@ class TaskBot:
         await update.message.reply_text(f"✅ Task created for @{username}: {description} at {time_str} ({frequency})\nTask ID: {task_id}")
 
     async def tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.message or not update.effective_chat:
+            return
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('''SELECT id, assignee_username, description, scheduled_time, frequency, is_done FROM tasks WHERE chat_id = ?''', (update.effective_chat.id,))
@@ -159,13 +171,22 @@ class TaskBot:
 
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
+        if not query:
+            return
         await query.answer()
         data = query.data
-        if not data.startswith("task_"):
+        if not data or not data.startswith("task_"):
             return
         parts = data.split('_')
-        task_id = int(parts[1])
-        response = parts[2]
+        if len(parts) < 3:
+            return
+        try:
+            task_id = int(parts[1])
+            response = parts[2]
+        except (ValueError, IndexError):
+            await query.edit_message_text("❌ Invalid response data.")
+            return
+        
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('SELECT is_done FROM tasks WHERE id = ?', (task_id,))
@@ -213,9 +234,12 @@ class TaskBot:
                     if reminder_count >= MAX_REMINDERS:
                         continue
                     if last_reminder:
-                        last_dt = datetime.fromisoformat(last_reminder)
-                        if (now - last_dt).total_seconds() < REMINDER_INTERVAL:
-                            continue
+                        try:
+                            last_dt = datetime.fromisoformat(last_reminder)
+                            if (now - last_dt).total_seconds() < REMINDER_INTERVAL:
+                                continue
+                        except ValueError:
+                            pass  # Invalid date format, proceed with reminder
                 # Send reminder
                 await self._send_task_reminder(context, chat_id, assignee_id, username, description, task_id)
                 # Update reminders table
@@ -228,10 +252,13 @@ class TaskBot:
         for row in c.fetchall():
             task_id, chat_id, assignee_id, username, description, reminder_count, last_reminder = row
             if last_reminder:
-                last_dt = datetime.fromisoformat(last_reminder)
-                if (now - last_dt).total_seconds() >= REMINDER_INTERVAL:
-                    await self._send_task_reminder(context, chat_id, assignee_id, username, description, task_id)
-                    c.execute('UPDATE reminders SET last_reminder = ?, reminder_count = ? WHERE task_id = ?', (now, reminder_count + 1, task_id))
+                try:
+                    last_dt = datetime.fromisoformat(last_reminder)
+                    if (now - last_dt).total_seconds() >= REMINDER_INTERVAL:
+                        await self._send_task_reminder(context, chat_id, assignee_id, username, description, task_id)
+                        c.execute('UPDATE reminders SET last_reminder = ?, reminder_count = ? WHERE task_id = ?', (now, reminder_count + 1, task_id))
+                except ValueError:
+                    pass  # Invalid date format, skip this reminder
         conn.commit()
         conn.close()
 
