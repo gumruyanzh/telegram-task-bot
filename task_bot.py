@@ -599,19 +599,15 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         
         if response == 'yes':
             # Remove from pending responses IMMEDIATELY to prevent duplicate processing
-            del self.pending_responses[pending_key]
+            if pending_key in self.pending_responses:
+                del self.pending_responses[pending_key]
             
-            # Task completed - REMOVE ALL PENDING REMINDERS for this task and user
+            # Task completed - REMOVE ALL PENDING REMINDERS for this user in this chat
             cursor.execute('''
                 DELETE FROM pending_reminders 
-                WHERE task_id = ? AND user_id = ? AND chat_id = ?
-            ''', (task_id, user_id, chat_id))
-            # Also remove any reminders for this user regardless of task (safety measure)
-            cursor.execute('''
-                DELETE FROM pending_reminders 
-                WHERE user_id = ? AND chat_id = ? AND task_title = ?
-            ''', (user_id, chat_id, task_info['title']))
-            logger.info(f"REMOVED all reminders for user {user_id} task {task_id} after YES response")
+                WHERE user_id = ? AND chat_id = ?
+            ''', (user_id, chat_id))
+            logger.info(f"REMOVED all reminders for user {user_id} in chat {chat_id} after YES response")
             
             # Send confirmation message
             try:
@@ -682,13 +678,14 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
         
         if message_text == 'yes':
             # Remove from pending responses
-            del self.pending_responses[pending_key]
+            if pending_key in self.pending_responses:
+                del self.pending_responses[pending_key]
             
-            # Task completed - remove any pending reminders
+            # Task completed - remove all pending reminders for this user in this chat
             cursor.execute('''
                 DELETE FROM pending_reminders 
-                WHERE task_id = ? AND user_id = ? AND chat_id = ?
-            ''', (task_id, user_id, chat_id))
+                WHERE user_id = ? AND chat_id = ?
+            ''', (user_id, chat_id))
             await update.message.reply_text(
                 f"✅ Great! Task completed: {task_info['title']}"
             )
