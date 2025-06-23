@@ -80,7 +80,8 @@ class TaskBot:
             "/tasks - List all tasks\n"
             "/removetask - Remove a task\n"
             "/debug - Show debug info (admin only)\n"
-            "/test - Test reminders (admin only)"
+            "/test - Test reminders (admin only)\n"
+            "/time - Show current UTC time"
         )
 
     async def debug(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -367,6 +368,18 @@ class TaskBot:
         except Exception as e:
             logger.error(f"Failed to send reminder for task {task_id}: {e}")
 
+    async def time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.message:
+            return
+        now = datetime.utcnow()
+        await update.message.reply_text(
+            f"⏰ Current Time\n\n"
+            f"UTC: {now.strftime('%H:%M:%S')}\n"
+            f"Date: {now.strftime('%Y-%m-%d')}\n\n"
+            f"To create a task for now, use: {now.strftime('%H:%M')}\n"
+            f"To create a task for +5 min, use: {(now + timedelta(minutes=5)).strftime('%H:%M')}"
+        )
+
     def run(self):
         self.application = Application.builder().token(self.token).build()
         self.application.add_handler(CommandHandler("start", self.start))
@@ -375,6 +388,7 @@ class TaskBot:
         self.application.add_handler(CommandHandler("removetask", self.removetask))
         self.application.add_handler(CommandHandler("debug", self.debug))
         self.application.add_handler(CommandHandler("test", self.test))
+        self.application.add_handler(CommandHandler("time", self.time))
         self.application.add_handler(CallbackQueryHandler(self.handle_callback))
         # Run reminders every 2 minutes
         self.application.job_queue.run_repeating(self.send_reminders, interval=REMINDER_INTERVAL, first=5)
