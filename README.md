@@ -1,102 +1,112 @@
 # 🤖 Telegram Task Management Bot
 
-A comprehensive Telegram bot for assigning and tracking tasks in group chats with automatic reminders and follow-ups.
+A professional Telegram bot for managing tasks in group chats with private reminder notifications and public completion announcements.
 
-## ✨ Features
+## ✨ Key Features
 
-- **Task Assignment**: Create tasks and assign them to specific users
-- **Scheduling**: Support for one-time and daily recurring tasks
-- **Automatic Reminders**: Bot mentions assigned users at scheduled times
-- **Follow-up System**: Re-asks if users don't respond or say "no" after 5 minutes
-- **Admin Controls**: Only authorized admins can create/manage tasks
-- **Persistent Storage**: SQLite database for reliable task storage
+- 📱 **Private Reminders** - Task reminders sent via DM
+- 📢 **Group Announcements** - Completions announced publicly  
+- ⏰ **PST Timezone** - All times in Pacific Time
+- 🔄 **Smart Persistence** - Reminds every 2 minutes until completion
+- 👥 **Any User Assignment** - Assign tasks to any group member
+- 🛡️ **Data Safety** - Zero data loss on updates
 
-## 🚀 Quick Deployment on Railway
+## 🚀 Quick Start
 
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/your-template-id)
+### For Users
+1. Add the bot to your Telegram group
+2. Use `/help` to see all available commands
+3. Start a private chat with the bot to receive DM reminders
 
-## 📋 Commands
-
-### Admin Commands
-- `/createtask @username [description] [time] [frequency]` - Create a new task
-- `/tasks` - List all active tasks
-- `/removetask [task_id]` - Remove a task
-- `/help` - Show help message
-
-### User Commands
-- Reply "yes" or "no" when asked about task completion
-
-## 🛠️ Local Development
-
-1. Clone the repository:
+### For Admins
 ```bash
-git clone https://github.com/yourusername/telegram-task-bot.git
-cd telegram-task-bot
-```
+# Create a task
+/createtask @username Clean office 09:00 daily
 
-2. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-3. Set environment variables:
-```bash
-export BOT_TOKEN="your_bot_token_here"
-export ADMIN_IDS="123456789,987654321"
-```
-
-4. Run the bot:
-```bash
-python task_bot.py
-```
-
-## 🔧 Configuration
-
-### Environment Variables
-
-- `BOT_TOKEN`: Your Telegram bot token from @BotFather
-- `ADMIN_IDS`: Comma-separated list of Telegram user IDs who can manage tasks
-
-### Getting Your User ID
-
-Message [@userinfobot](https://t.me/userinfobot) on Telegram to get your user ID.
-
-## 📖 Usage Examples
-
-Create a daily task:
-```
-/createtask @john Clean the office 09:00 daily
-```
-
-Create a one-time task:
-```
-/createtask @jane Submit weekly report 17:30 once
-```
-
-List all tasks:
-```
+# View all tasks
 /tasks
-```
 
-Remove a task:
-```
+# Remove a task
 /removetask 5
 ```
 
-## 🔒 Security
+## 📋 Commands
 
-- Bot token is kept secure through environment variables
-- Only authorized admins can create/manage tasks
-- Database is local to the deployment instance
+| Command | Description | Who Can Use |
+|---------|-------------|-------------|
+| `/help` | Show comprehensive help | Everyone |
+| `/time` | Current PST time | Everyone |
+| `/tasks` | List all tasks | Everyone |
+| `/createtask` | Create new task | Admins only |
+| `/removetask` | Remove task | Admins only |
 
-## 📄 License
+## 🏗️ How It Works
 
-This project is open source and available under the [MIT License](LICENSE).
+1. **Create Task** → Admin assigns task with time/frequency
+2. **Private Reminder** → Bot DMs user when task is due
+3. **User Response** → Click YES (done) or NO (not done)
+4. **Group Announcement** → Completion announced to group
+5. **Follow-ups** → If NO, reminds every 2 minutes (max 30 times)
 
-## 🤝 Contributing
+## 🔧 Setup & Deployment
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+### Environment Variables
+```bash
+BOT_TOKEN=your_telegram_bot_token_from_botfather
+ADMIN_IDS=123456789,987654321  # Comma-separated admin user IDs
+```
 
-## 📞 Support
+### Deploy on Railway
+1. Fork this repository
+2. Connect to Railway
+3. Set environment variables
+4. Deploy automatically
 
-If you encounter any issues, please create an issue in this repository or contact the maintainers.
+### Local Development
+```bash
+pip install -r requirements.txt
+export BOT_TOKEN="your_token"
+export ADMIN_IDS="your_user_id"
+python task_bot.py
+```
+
+## 📊 Database
+
+Uses SQLite3 with automatic schema management:
+- **Tasks** - All task information and status
+- **Reminders** - Tracking follow-up reminders  
+- **Users** - User ID tracking for private messaging
+
+**Data Safety**: All updates preserve existing data with safe migrations.
+
+## 📖 Documentation
+
+- **[Technical Specification](SPECIFICATION.md)** - Complete system documentation
+- **[Commands Reference](SPECIFICATION.md#-bot-commands)** - All available commands
+- **[Workflow Details](SPECIFICATION.md#-workflow)** - How the system works
+
+## 🛡️ Security & Privacy
+
+- Only admins can create/remove tasks
+- Users can only respond to their assigned tasks
+- Private reminders protect user privacy
+- Secure database with ACID compliance
+
+## 🔄 Version History
+
+- **v2.0.0** - Private messaging, user tracking, PST timezone
+- **v1.0.0** - Basic task management and reminders
+
+## 📝 License
+
+MIT License - See [LICENSE](LICENSE) for details.
+
+## 🆘 Support
+
+- Use `/help` in your group for command reference
+- Check [SPECIFICATION.md](SPECIFICATION.md) for technical details
+- Contact your group administrators for assistance
+
+---
+
+**Made with ❤️ for productive teams**

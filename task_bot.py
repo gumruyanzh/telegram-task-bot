@@ -644,9 +644,61 @@ class TaskBot:
             except Exception as e:
                 logger.error(f"Failed to send reminder for task {task_id}: {e}")
 
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.message:
+            return
+        
+        # Track the user
+        await self._track_user(update.effective_user)
+        
+        help_text = """📋 **Task Management Bot Help**
+
+**📝 Creating Tasks:**
+• `/createtask @username description time frequency`
+• Example: `/createtask @john Clean office 09:00 daily`
+• Example: `/createtask @jane Submit report 17:30 once`
+
+**⏰ Time & Frequency:**
+• Time format: 24-hour PST (09:00, 17:30, 23:45)
+• Frequency: `once` (one-time) or `daily` (repeats daily)
+• All times are in Pacific Time (PST/PDT)
+
+**📋 Managing Tasks:**
+• `/tasks` - View all active tasks with their IDs
+• `/removetask 5` - Remove task with ID 5
+• `/time` - Show current PST time
+
+**🔔 Task Responses:**
+When you get a task reminder:
+• ✅ **YES** - Task completed (stops all reminders)
+• ❌ **NO** - Task not completed (reminds again in 2 minutes)
+
+**👥 How Reminders Work:**
+• **Private reminders** sent to you via DM
+• **Group announcements** when tasks are completed
+• Automatic follow-ups every 2 minutes until completed
+• Maximum 30 reminders per task
+
+**🔧 Admin Commands:**
+• `/debug` - Show system status and tracked users
+• `/test` - Manually trigger reminder system
+• `/testtask @username` - Create test task for immediate testing
+
+**💡 Tips:**
+• Start a private chat with the bot to receive DM reminders
+• Only assigned users can respond to their tasks
+• Task completions are announced in the group
+• Use `/time` to see current PST time for scheduling
+
+**🆘 Need Help?**
+Contact your group administrators for task management assistance."""
+        
+        await update.message.reply_text(help_text, parse_mode='Markdown')
+
     def run(self):
         self.application = Application.builder().token(self.token).build()
         self.application.add_handler(CommandHandler("start", self.start))
+        self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("createtask", self.createtask))
         self.application.add_handler(CommandHandler("tasks", self.tasks))
         self.application.add_handler(CommandHandler("removetask", self.removetask))
