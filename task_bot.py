@@ -12,6 +12,7 @@ import sqlite3
 import logging
 from datetime import datetime, timedelta
 from typing import List
+import pytz
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -22,6 +23,46 @@ from telegram.ext import (
 DB_PATH = "tasks.db"
 REMINDER_INTERVAL = 120  # seconds (2 minutes)
 MAX_REMINDERS = 30
+
+# --- TIMEZONE SETUP ---
+PST = pytz.timezone('America/Los_Angeles')  # This handles PST/PDT automatically
+UTC = pytz.timezone('UTC')
+
+def get_pst_now():
+    """Get current time in PST/PDT"""
+    return datetime.now(PST)
+
+def get_utc_now():
+    """Get current time in UTC"""
+    return datetime.now(UTC)
+
+def pst_to_utc(pst_time):
+    """Convert PST time to UTC for database storage"""
+    if isinstance(pst_time, str):
+        # Parse time string (HH:MM) and add today's date in PST
+        time_parts = pst_time.split(':')
+        hour, minute = int(time_parts[0]), int(time_parts[1])
+        pst_now = get_pst_now()
+        pst_dt = pst_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        # If the time has already passed today, schedule for tomorrow
+        if pst_dt <= pst_now:
+            pst_dt += timedelta(days=1)
+    else:
+        pst_dt = pst_time
+    
+    return pst_dt.astimezone(UTC)
+
+def utc_to_pst(utc_time):
+    """Convert UTC time to PST for display"""
+    if isinstance(utc_time, str):
+        utc_dt = UTC.localize(datetime.fromisoformat(utc_time.replace('Z', '')))
+    else:
+        if utc_time.tzinfo is None:
+            utc_dt = UTC.localize(utc_time)
+        else:
+            utc_dt = utc_time
+    
+    return utc_dt.astimezone(PST)
 
 # --- LOGGING ---
 logging.basicConfig(
@@ -82,7 +123,8 @@ class TaskBot:
             "/debug - Show debug info (admin only)\n"
             "/test - Test reminders (admin only)\n"
             "/testtask - Create a test task (admin only)\n"
-            "/time - Show current UTC time"
+            "/time - Show current PST time\n\n"
+            "⏰ All times are in PST (Pacific Time)"
         )
 
     async def debug(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -93,7 +135,8 @@ class TaskBot:
             await update.message.reply_text("❌ Only admins can use debug.")
             return
         
-        now = datetime.utcnow()
+        pst_now = get_pst_now()
+        utc_now = get_utc_now()
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
@@ -108,13 +151,14 @@ class TaskBot:
         conn.close()
         
         msg = f"🐛 Debug Info\n\n"
-        msg += f"Current UTC time: {now.strftime('%H:%M:%S')}\n\n"
+        msg += f"PST time: {pst_now.strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
+        msg += f"UTC time: {utc_now.strftime('%Y-%m-%d %H:%M:%S %Z')}\n\n"
         msg += f"Tasks ({len(tasks)}):\n"
         for task in tasks:
             task_id, chat_id, username, desc, sched_time, freq, is_done = task
             status = "✅ Done" if is_done else "⏳ Pending"
             msg += f"ID {task_id}: @{username} - {desc[:30]}...\n"
-            msg += f"  Time: {sched_time} ({freq}) - {status}\n"
+            msg += f"  Time: {sched_time} PST ({freq}) - {status}\n"
         
         msg += f"\nReminders ({len(reminders)}):\n"
         for task_id, count, last_reminder in reminders:
@@ -149,9 +193,9 @@ class TaskBot:
         username = context.args[0].lstrip('@')
         description = " ".join(context.args[1:]) if len(context.args) > 1 else "Test task"
         
-        # Create task for current time + 1 minute
-        now = datetime.utcnow()
-        test_time = now + timedelta(minutes=1)
+        # Create task for current PST time + 1 minute
+        pst_now = get_pst_now()
+        test_time = pst_now + timedelta(minutes=1)
         time_str = test_time.strftime("%H:%M")
         
         # Get user id from username
@@ -170,7 +214,7 @@ class TaskBot:
             await update.message.reply_text(f"❌ User @{username} not found in this chat administrators.")
             return
             
-        # Save task
+        # Save task (store the PST time string, conversion to UTC happens in reminder logic)
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('''
@@ -181,15 +225,30 @@ class TaskBot:
         conn.commit()
         conn.close()
         
-        logger.info(f"Created test task {task_id} for @{username} at {time_str}")
+        logger.info(f"Created test task {task_id} for @{username} at {time_str} PST")
         await update.message.reply_text(
             f"🧪 Test task created!\n\n"
             f"Task ID: {task_id}\n"
             f"Assignee: @{username}\n"
             f"Description: {description}\n"
-            f"Time: {time_str} UTC (in 1 minute)\n"
-            f"Current time: {now.strftime('%H:%M:%S')} UTC\n\n"
+            f"Time: {time_str} PST (in 1 minute)\n"
+            f"Current PST time: {pst_now.strftime('%H:%M:%S')}\n\n"
             f"You should get a reminder in about 1-2 minutes!"
+        )
+
+    async def time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.message:
+            return
+        pst_now = get_pst_now()
+        utc_now = get_utc_now()
+        await update.message.reply_text(
+            f"⏰ Current Time\n\n"
+            f"PST: {pst_now.strftime('%H:%M:%S %Z')}\n"
+            f"Date: {pst_now.strftime('%Y-%m-%d')}\n"
+            f"UTC: {utc_now.strftime('%H:%M:%S %Z')}\n\n"
+            f"To create a task for now, use: {pst_now.strftime('%H:%M')}\n"
+            f"To create a task for +5 min, use: {(pst_now + timedelta(minutes=5)).strftime('%H:%M')}\n\n"
+            f"💡 All times are in PST (Pacific Time)"
         )
 
     async def createtask(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -200,7 +259,7 @@ class TaskBot:
             await update.message.reply_text("❌ Only admins can create tasks.")
             return
         if len(context.args) < 4:
-            await update.message.reply_text("❌ Usage: /createtask @username description time frequency")
+            await update.message.reply_text("❌ Usage: /createtask @username description time frequency\n⏰ Time should be in PST (e.g., 14:00)")
             return
         username = context.args[0].lstrip('@')
         time_str = context.args[-2]
@@ -210,7 +269,7 @@ class TaskBot:
         try:
             datetime.strptime(time_str, "%H:%M")
         except ValueError:
-            await update.message.reply_text("❌ Time must be in HH:MM 24-hour format.")
+            await update.message.reply_text("❌ Time must be in HH:MM 24-hour format (PST).")
             return
         if frequency not in ["once", "daily"]:
             await update.message.reply_text("❌ Frequency must be 'once' or 'daily'.")
@@ -242,8 +301,8 @@ class TaskBot:
         task_id = c.lastrowid
         conn.commit()
         conn.close()
-        logger.info(f"Created task {task_id} for @{username} at {time_str}")
-        await update.message.reply_text(f"✅ Task created for @{username}: {description} at {time_str} ({frequency})\nTask ID: {task_id}")
+        logger.info(f"Created task {task_id} for @{username} at {time_str} PST")
+        await update.message.reply_text(f"✅ Task created for @{username}: {description} at {time_str} PST ({frequency})\nTask ID: {task_id}")
 
     async def tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.effective_chat:
@@ -259,7 +318,7 @@ class TaskBot:
         msg = "Tasks:\n"
         for row in rows:
             status = "✅" if row[5] else "⏳"
-            msg += f"ID {row[0]}: @{row[1]} - {row[2]} at {row[3]} ({row[4]}) {status}\n"
+            msg += f"ID {row[0]}: @{row[1]} - {row[2]} at {row[3]} PST ({row[4]}) {status}\n"
         await update.message.reply_text(msg)
 
     async def removetask(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -322,19 +381,21 @@ class TaskBot:
             row = c.fetchone()
             if row:
                 count = row[0] + 1
-                c.execute('UPDATE reminders SET reminder_count = ?, last_reminder = ? WHERE task_id = ?', (count, datetime.utcnow(), task_id))
+                c.execute('UPDATE reminders SET reminder_count = ?, last_reminder = ? WHERE task_id = ?', (count, get_utc_now(), task_id))
             else:
                 count = 1
-                c.execute('INSERT INTO reminders (task_id, reminder_count, last_reminder) VALUES (?, ?, ?)', (task_id, count, datetime.utcnow()))
+                c.execute('INSERT INTO reminders (task_id, reminder_count, last_reminder) VALUES (?, ?, ?)', (task_id, count, get_utc_now()))
             await query.edit_message_text("📝 Task not completed. I will remind you again in 2 minutes.")
             logger.info(f"Task {task_id} marked as not done, will remind again")
         conn.commit()
         conn.close()
 
     async def send_reminders(self, context: ContextTypes.DEFAULT_TYPE):
-        now = datetime.utcnow()
+        utc_now = get_utc_now()
+        pst_now = get_pst_now()
         logger.info(f"=== REMINDER CHECK START ===")
-        logger.info(f"Current UTC time: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info(f"Current PST time: {pst_now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        logger.info(f"Current UTC time: {utc_now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
         
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -348,19 +409,19 @@ class TaskBot:
             task_id, chat_id, assignee_id, username, description, sched_time, freq = task
             logger.info(f"--- Checking Task {task_id} ---")
             logger.info(f"Task: @{username} - {description}")
-            logger.info(f"Scheduled time: {sched_time}")
+            logger.info(f"Scheduled time: {sched_time} PST")
             logger.info(f"Frequency: {freq}")
             
-            # Check if it's time to remind (with 2-minute tolerance for safety)
-            now_time = now.strftime("%H:%M")
-            logger.info(f"Current time: {now_time}")
+            # Check if it's time to remind (compare PST times)
+            current_pst_time = pst_now.strftime("%H:%M")
+            logger.info(f"Current PST time: {current_pst_time}")
             
             try:
                 sched_hour, sched_min = map(int, sched_time.split(':'))
-                now_hour, now_min = now.hour, now.minute
+                current_hour, current_min = pst_now.hour, pst_now.minute
                 
                 # Check if current time is within 2 minutes of scheduled time
-                time_diff = abs((now_hour * 60 + now_min) - (sched_hour * 60 + sched_min))
+                time_diff = abs((current_hour * 60 + current_min) - (sched_hour * 60 + sched_min))
                 time_match = time_diff <= 2
                 
                 logger.info(f"Time difference: {time_diff} minutes")
@@ -369,7 +430,7 @@ class TaskBot:
                 if time_match:
                     logger.info(f"✅ Time matches for task {task_id}!")
                     
-                    # Check if already reminded recently
+                    # Check if already reminded recently (using UTC for consistency)
                     c.execute('SELECT last_reminder, reminder_count FROM reminders WHERE task_id = ?', (task_id,))
                     row = c.fetchone()
                     
@@ -386,7 +447,9 @@ class TaskBot:
                         elif last_reminder:
                             try:
                                 last_dt = datetime.fromisoformat(last_reminder)
-                                seconds_since = (now - last_dt).total_seconds()
+                                if last_dt.tzinfo is None:
+                                    last_dt = UTC.localize(last_dt)
+                                seconds_since = (utc_now - last_dt).total_seconds()
                                 logger.info(f"Seconds since last reminder: {seconds_since}")
                                 if seconds_since < REMINDER_INTERVAL:
                                     should_remind = False
@@ -404,11 +467,11 @@ class TaskBot:
                             if row:
                                 new_count = (reminder_count or 0) + 1
                                 c.execute('UPDATE reminders SET last_reminder = ?, reminder_count = ? WHERE task_id = ?', 
-                                        (now, new_count, task_id))
+                                        (utc_now, new_count, task_id))
                                 logger.info(f"Updated reminder count to {new_count}")
                             else:
                                 c.execute('INSERT INTO reminders (task_id, reminder_count, last_reminder) VALUES (?, ?, ?)', 
-                                        (task_id, 1, now))
+                                        (task_id, 1, utc_now))
                                 logger.info(f"Created new reminder record")
                         except Exception as e:
                             logger.error(f"Failed to send/record reminder: {e}")
@@ -433,14 +496,16 @@ class TaskBot:
             if last_reminder:
                 try:
                     last_dt = datetime.fromisoformat(last_reminder)
-                    seconds_since = (now - last_dt).total_seconds()
+                    if last_dt.tzinfo is None:
+                        last_dt = UTC.localize(last_dt)
+                    seconds_since = (utc_now - last_dt).total_seconds()
                     logger.info(f"Seconds since last follow-up: {seconds_since}")
                     
                     if seconds_since >= REMINDER_INTERVAL:
                         logger.info(f"🚀 SENDING FOLLOW-UP reminder for task {task_id}")
                         await self._send_task_reminder(context, chat_id, assignee_id, username, description, task_id)
                         c.execute('UPDATE reminders SET last_reminder = ?, reminder_count = ? WHERE task_id = ?', 
-                                (now, reminder_count + 1, task_id))
+                                (utc_now, reminder_count + 1, task_id))
                     else:
                         logger.info(f"❌ Too soon for follow-up ({seconds_since}s < {REMINDER_INTERVAL}s)")
                 except ValueError as e:
@@ -467,18 +532,6 @@ class TaskBot:
             logger.info(f"Successfully sent reminder for task {task_id} to @{username}")
         except Exception as e:
             logger.error(f"Failed to send reminder for task {task_id}: {e}")
-
-    async def time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not update.message:
-            return
-        now = datetime.utcnow()
-        await update.message.reply_text(
-            f"⏰ Current Time\n\n"
-            f"UTC: {now.strftime('%H:%M:%S')}\n"
-            f"Date: {now.strftime('%Y-%m-%d')}\n\n"
-            f"To create a task for now, use: {now.strftime('%H:%M')}\n"
-            f"To create a task for +5 min, use: {(now + timedelta(minutes=5)).strftime('%H:%M')}"
-        )
 
     def run(self):
         self.application = Application.builder().token(self.token).build()
