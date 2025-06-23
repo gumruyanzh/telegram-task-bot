@@ -81,6 +81,7 @@ class TaskBot:
             "/removetask - Remove a task\n"
             "/debug - Show debug info (admin only)\n"
             "/test - Test reminders (admin only)\n"
+            "/testtask - Create a test task (admin only)\n"
             "/time - Show current UTC time"
         )
 
@@ -132,6 +133,64 @@ class TaskBot:
         await update.message.reply_text("🧪 Testing reminder system...")
         await self.send_reminders(context)
         await update.message.reply_text("✅ Reminder test completed. Check logs for details.")
+
+    async def testtask(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.message or not update.effective_user:
+            return
+        user_id = update.effective_user.id
+        if not self._is_admin(user_id):
+            await update.message.reply_text("❌ Only admins can use testtask.")
+            return
+        
+        if len(context.args) < 1:
+            await update.message.reply_text("❌ Usage: /testtask @username [description]")
+            return
+            
+        username = context.args[0].lstrip('@')
+        description = " ".join(context.args[1:]) if len(context.args) > 1 else "Test task"
+        
+        # Create task for current time + 1 minute
+        now = datetime.utcnow()
+        test_time = now + timedelta(minutes=1)
+        time_str = test_time.strftime("%H:%M")
+        
+        # Get user id from username
+        chat = update.effective_chat
+        assignee_id = None
+        try:
+            administrators = await chat.get_administrators()
+            for member in administrators:
+                if member.user.username and member.user.username.lower() == username.lower():
+                    assignee_id = member.user.id
+                    break
+        except Exception as e:
+            logger.error(f"Error getting administrators: {e}")
+        
+        if not assignee_id:
+            await update.message.reply_text(f"❌ User @{username} not found in this chat administrators.")
+            return
+            
+        # Save task
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO tasks (chat_id, assignee_id, assignee_username, description, scheduled_time, frequency)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (chat.id, assignee_id, username, description, time_str, "once"))
+        task_id = c.lastrowid
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Created test task {task_id} for @{username} at {time_str}")
+        await update.message.reply_text(
+            f"🧪 Test task created!\n\n"
+            f"Task ID: {task_id}\n"
+            f"Assignee: @{username}\n"
+            f"Description: {description}\n"
+            f"Time: {time_str} UTC (in 1 minute)\n"
+            f"Current time: {now.strftime('%H:%M:%S')} UTC\n\n"
+            f"You should get a reminder in about 1-2 minutes!"
+        )
 
     async def createtask(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.effective_user:
@@ -274,7 +333,8 @@ class TaskBot:
 
     async def send_reminders(self, context: ContextTypes.DEFAULT_TYPE):
         now = datetime.utcnow()
-        logger.info(f"Checking for reminders at {now.strftime('%H:%M:%S')}")
+        logger.info(f"=== REMINDER CHECK START ===")
+        logger.info(f"Current UTC time: {now.strftime('%Y-%m-%d %H:%M:%S')}")
         
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -286,69 +346,109 @@ class TaskBot:
         
         for task in tasks:
             task_id, chat_id, assignee_id, username, description, sched_time, freq = task
+            logger.info(f"--- Checking Task {task_id} ---")
+            logger.info(f"Task: @{username} - {description}")
+            logger.info(f"Scheduled time: {sched_time}")
+            logger.info(f"Frequency: {freq}")
             
-            # Check if it's time to remind (with 1-minute tolerance)
+            # Check if it's time to remind (with 2-minute tolerance for safety)
             now_time = now.strftime("%H:%M")
-            sched_hour, sched_min = map(int, sched_time.split(':'))
-            now_hour, now_min = now.hour, now.minute
+            logger.info(f"Current time: {now_time}")
             
-            # Check if current time is within 1 minute of scheduled time
-            time_match = False
-            if now_hour == sched_hour and abs(now_min - sched_min) <= 1:
-                time_match = True
-            
-            if time_match:
-                logger.info(f"Time matches for task {task_id} ({sched_time})")
-                # Check if already reminded recently
-                c.execute('SELECT last_reminder, reminder_count FROM reminders WHERE task_id = ?', (task_id,))
-                row = c.fetchone()
+            try:
+                sched_hour, sched_min = map(int, sched_time.split(':'))
+                now_hour, now_min = now.hour, now.minute
                 
-                should_remind = True
-                if row:
-                    last_reminder, reminder_count = row
-                    if reminder_count >= MAX_REMINDERS:
-                        logger.info(f"Task {task_id} reached max reminders ({reminder_count})")
-                        should_remind = False
-                    elif last_reminder:
-                        try:
-                            last_dt = datetime.fromisoformat(last_reminder)
-                            if (now - last_dt).total_seconds() < REMINDER_INTERVAL:
-                                logger.info(f"Task {task_id} was reminded recently")
-                                should_remind = False
-                        except ValueError:
-                            pass  # Invalid date format, proceed with reminder
+                # Check if current time is within 2 minutes of scheduled time
+                time_diff = abs((now_hour * 60 + now_min) - (sched_hour * 60 + sched_min))
+                time_match = time_diff <= 2
                 
-                if should_remind:
-                    logger.info(f"Sending reminder for task {task_id}")
-                    await self._send_task_reminder(context, chat_id, assignee_id, username, description, task_id)
-                    # Update reminders table
+                logger.info(f"Time difference: {time_diff} minutes")
+                logger.info(f"Time match (within 2 min): {time_match}")
+                
+                if time_match:
+                    logger.info(f"✅ Time matches for task {task_id}!")
+                    
+                    # Check if already reminded recently
+                    c.execute('SELECT last_reminder, reminder_count FROM reminders WHERE task_id = ?', (task_id,))
+                    row = c.fetchone()
+                    
+                    should_remind = True
+                    reason = ""
+                    
                     if row:
-                        c.execute('UPDATE reminders SET last_reminder = ?, reminder_count = ? WHERE task_id = ?', 
-                                (now, (reminder_count or 0) + 1, task_id))
+                        last_reminder, reminder_count = row
+                        logger.info(f"Existing reminder record: count={reminder_count}, last={last_reminder}")
+                        
+                        if reminder_count >= MAX_REMINDERS:
+                            should_remind = False
+                            reason = f"Max reminders reached ({reminder_count}/{MAX_REMINDERS})"
+                        elif last_reminder:
+                            try:
+                                last_dt = datetime.fromisoformat(last_reminder)
+                                seconds_since = (now - last_dt).total_seconds()
+                                logger.info(f"Seconds since last reminder: {seconds_since}")
+                                if seconds_since < REMINDER_INTERVAL:
+                                    should_remind = False
+                                    reason = f"Too soon since last reminder ({seconds_since}s < {REMINDER_INTERVAL}s)"
+                            except ValueError as e:
+                                logger.error(f"Invalid date format: {last_reminder}, error: {e}")
                     else:
-                        c.execute('INSERT INTO reminders (task_id, reminder_count, last_reminder) VALUES (?, ?, ?)', 
-                                (task_id, 1, now))
+                        logger.info("No existing reminder record - first time")
+                    
+                    if should_remind:
+                        logger.info(f"🚀 SENDING REMINDER for task {task_id}")
+                        try:
+                            await self._send_task_reminder(context, chat_id, assignee_id, username, description, task_id)
+                            # Update reminders table
+                            if row:
+                                new_count = (reminder_count or 0) + 1
+                                c.execute('UPDATE reminders SET last_reminder = ?, reminder_count = ? WHERE task_id = ?', 
+                                        (now, new_count, task_id))
+                                logger.info(f"Updated reminder count to {new_count}")
+                            else:
+                                c.execute('INSERT INTO reminders (task_id, reminder_count, last_reminder) VALUES (?, ?, ?)', 
+                                        (task_id, 1, now))
+                                logger.info(f"Created new reminder record")
+                        except Exception as e:
+                            logger.error(f"Failed to send/record reminder: {e}")
+                    else:
+                        logger.info(f"❌ Not sending reminder: {reason}")
+                else:
+                    logger.info(f"❌ Time doesn't match for task {task_id}")
+                    
+            except Exception as e:
+                logger.error(f"Error processing task {task_id}: {e}")
         
         # Send follow-up reminders for tasks with NO or no response
+        logger.info(f"--- CHECKING FOLLOW-UP REMINDERS ---")
         c.execute('''SELECT r.task_id, t.chat_id, t.assignee_id, t.assignee_username, t.description, r.reminder_count, r.last_reminder FROM reminders r JOIN tasks t ON r.task_id = t.id WHERE t.is_done = 0 AND r.reminder_count < ?''', (MAX_REMINDERS,))
         follow_ups = c.fetchall()
         logger.info(f"Found {len(follow_ups)} tasks needing follow-up reminders")
         
         for row in follow_ups:
             task_id, chat_id, assignee_id, username, description, reminder_count, last_reminder = row
+            logger.info(f"Follow-up check for task {task_id}: count={reminder_count}, last={last_reminder}")
+            
             if last_reminder:
                 try:
                     last_dt = datetime.fromisoformat(last_reminder)
-                    if (now - last_dt).total_seconds() >= REMINDER_INTERVAL:
-                        logger.info(f"Sending follow-up reminder for task {task_id} (count: {reminder_count})")
+                    seconds_since = (now - last_dt).total_seconds()
+                    logger.info(f"Seconds since last follow-up: {seconds_since}")
+                    
+                    if seconds_since >= REMINDER_INTERVAL:
+                        logger.info(f"🚀 SENDING FOLLOW-UP reminder for task {task_id}")
                         await self._send_task_reminder(context, chat_id, assignee_id, username, description, task_id)
                         c.execute('UPDATE reminders SET last_reminder = ?, reminder_count = ? WHERE task_id = ?', 
                                 (now, reminder_count + 1, task_id))
-                except ValueError:
-                    logger.error(f"Invalid date format for task {task_id}: {last_reminder}")
+                    else:
+                        logger.info(f"❌ Too soon for follow-up ({seconds_since}s < {REMINDER_INTERVAL}s)")
+                except ValueError as e:
+                    logger.error(f"Invalid date format for task {task_id}: {last_reminder}, error: {e}")
         
         conn.commit()
         conn.close()
+        logger.info(f"=== REMINDER CHECK END ===")
 
     async def _send_task_reminder(self, context, chat_id, assignee_id, username, description, task_id):
         keyboard = [
@@ -388,6 +488,7 @@ class TaskBot:
         self.application.add_handler(CommandHandler("removetask", self.removetask))
         self.application.add_handler(CommandHandler("debug", self.debug))
         self.application.add_handler(CommandHandler("test", self.test))
+        self.application.add_handler(CommandHandler("testtask", self.testtask))
         self.application.add_handler(CommandHandler("time", self.time))
         self.application.add_handler(CallbackQueryHandler(self.handle_callback))
         # Run reminders every 2 minutes
