@@ -1,2 +1,2 @@
-python-telegram-bot[job-queue]==20.7
-schedule==1.2.0
+python-telegram-bot>=20.0,<21.0  # Telegram bot library
+# sqlite3 is built-in with Python, no need to install
