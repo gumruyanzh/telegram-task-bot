@@ -602,12 +602,12 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             if pending_key in self.pending_responses:
                 del self.pending_responses[pending_key]
             
-            # Task completed - REMOVE ALL PENDING REMINDERS for this user in this chat
+            # Task completed - REMOVE ALL PENDING REMINDERS for this task and user in this chat
             cursor.execute('''
                 DELETE FROM pending_reminders 
-                WHERE user_id = ? AND chat_id = ?
-            ''', (user_id, chat_id))
-            logger.info(f"REMOVED all reminders for user {user_id} in chat {chat_id} after YES response")
+                WHERE task_id = ? AND user_id = ? AND chat_id = ?
+            ''', (task_id, user_id, chat_id))
+            logger.info(f"REMOVED all reminders for user {user_id} and task {task_id} in chat {chat_id} after YES response")
             
             # Send confirmation message
             try:
@@ -681,11 +681,11 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
             if pending_key in self.pending_responses:
                 del self.pending_responses[pending_key]
             
-            # Task completed - remove all pending reminders for this user in this chat
+            # Task completed - remove all pending reminders for this task and user in this chat
             cursor.execute('''
                 DELETE FROM pending_reminders 
-                WHERE user_id = ? AND chat_id = ?
-            ''', (user_id, chat_id))
+                WHERE task_id = ? AND user_id = ? AND chat_id = ?
+            ''', (task_id, user_id, chat_id))
             await update.message.reply_text(
                 f"✅ Great! Task completed: {task_info['title']}"
             )
@@ -814,13 +814,18 @@ Note: All times are in Pacific Standard Time (PST/PDT)."""
                         logger.error(f"Failed to send final reminder: {e}")
                 else:
                     # Check if this reminder is still needed (user might have responded via another message)
+                    # Re-check in DB in case it was deleted after YES
+                    cursor.execute('''SELECT 1 FROM pending_reminders WHERE id = ?''', (reminder_id,))
+                    still_exists = cursor.fetchone()
+                    if not still_exists:
+                        logger.info(f"Reminder {reminder_id} was deleted after YES, skipping follow-up.")
+                        continue
                     pending_key = f"{user_id}_{chat_id}"
                     if pending_key in self.pending_responses:
                         # User just responded, remove this reminder
                         cursor.execute('DELETE FROM pending_reminders WHERE id = ?', (reminder_id,))
                         logger.info(f"Removed stale reminder {reminder_id} - user just responded")
                         continue
-                    
                     # Send reminder and schedule next one
                     await self._send_followup_reminder(reminder_id, task_id, username, user_id, 
                                                      chat_id, task_title, frequency, reminder_count)
