@@ -198,21 +198,8 @@ class TaskBot:
         test_time = pst_now + timedelta(minutes=1)
         time_str = test_time.strftime("%H:%M")
         
-        # Get user id from username
-        chat = update.effective_chat
-        assignee_id = None
-        try:
-            administrators = await chat.get_administrators()
-            for member in administrators:
-                if member.user.username and member.user.username.lower() == username.lower():
-                    assignee_id = member.user.id
-                    break
-        except Exception as e:
-            logger.error(f"Error getting administrators: {e}")
-        
-        if not assignee_id:
-            await update.message.reply_text(f"❌ User @{username} not found in this chat administrators.")
-            return
+        # Use placeholder ID for any user
+        assignee_id = 0  # Placeholder - we'll mention by username instead
             
         # Save task (store the PST time string, conversion to UTC happens in reminder logic)
         conn = sqlite3.connect(DB_PATH)
@@ -220,7 +207,7 @@ class TaskBot:
         c.execute('''
             INSERT INTO tasks (chat_id, assignee_id, assignee_username, description, scheduled_time, frequency)
             VALUES (?, ?, ?, ?, ?, ?)
-        ''', (chat.id, assignee_id, username, description, time_str, "once"))
+        ''', (update.effective_chat.id, assignee_id, username, description, time_str, "once"))
         task_id = c.lastrowid
         conn.commit()
         conn.close()
@@ -274,30 +261,18 @@ class TaskBot:
         if frequency not in ["once", "daily"]:
             await update.message.reply_text("❌ Frequency must be 'once' or 'daily'.")
             return
-        # Get user id from username - simplified approach for demo
-        # In production, you'd want to maintain a user database or use different approach
-        chat = update.effective_chat
-        assignee_id = None
-        try:
-            # Get chat administrators
-            administrators = await chat.get_administrators()
-            for member in administrators:
-                if member.user.username and member.user.username.lower() == username.lower():
-                    assignee_id = member.user.id
-                    break
-        except Exception as e:
-            logger.error(f"Error getting administrators: {e}")
         
-        if not assignee_id:
-            await update.message.reply_text(f"❌ User @{username} not found in this chat administrators.")
-            return
+        # For now, we'll store the username and use 0 as placeholder for user_id
+        # The bot will still work by mentioning @username in messages
+        assignee_id = 0  # Placeholder - we'll mention by username instead
+        
         # Save task
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('''
             INSERT INTO tasks (chat_id, assignee_id, assignee_username, description, scheduled_time, frequency)
             VALUES (?, ?, ?, ?, ?, ?)
-        ''', (chat.id, assignee_id, username, description, time_str, frequency))
+        ''', (update.effective_chat.id, assignee_id, username, description, time_str, frequency))
         task_id = c.lastrowid
         conn.commit()
         conn.close()
@@ -362,19 +337,43 @@ class TaskBot:
             await query.edit_message_text("❌ Invalid response data.")
             return
         
+        # Get the task details to check if this user can respond
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute('SELECT is_done FROM tasks WHERE id = ?', (task_id,))
+        c.execute('SELECT assignee_username, is_done FROM tasks WHERE id = ?', (task_id,))
         row = c.fetchone()
-        if not row or row[0]:
-            await query.edit_message_text("This task is already completed or does not exist.")
+        if not row:
+            await query.edit_message_text("❌ Task not found.")
             conn.close()
             return
+            
+        assignee_username, is_done = row
+        
+        # Check if task is already done
+        if is_done:
+            await query.edit_message_text("✅ This task is already completed.")
+            conn.close()
+            return
+        
+        # Check if the responding user matches the assigned username
+        responding_user = query.from_user
+        if responding_user.username and responding_user.username.lower() != assignee_username.lower():
+            await query.edit_message_text(f"❌ This task is assigned to @{assignee_username}, not you.")
+            conn.close()
+            return
+        
+        # If user doesn't have a username but we still want to allow responses
+        # (some users might not have usernames set)
+        if not responding_user.username:
+            await query.edit_message_text(f"❌ Please set a Telegram username to respond to tasks. This task is for @{assignee_username}.")
+            conn.close()
+            return
+            
         if response == "yes":
             c.execute('UPDATE tasks SET is_done = 1 WHERE id = ?', (task_id,))
             c.execute('DELETE FROM reminders WHERE task_id = ?', (task_id,))
             await query.edit_message_text("✅ Task marked as complete! You will not be reminded again.")
-            logger.info(f"Task {task_id} marked as complete")
+            logger.info(f"Task {task_id} marked as complete by @{responding_user.username}")
         elif response == "no":
             # Increment reminder count and schedule next
             c.execute('SELECT reminder_count FROM reminders WHERE task_id = ?', (task_id,))
@@ -386,7 +385,7 @@ class TaskBot:
                 count = 1
                 c.execute('INSERT INTO reminders (task_id, reminder_count, last_reminder) VALUES (?, ?, ?)', (task_id, count, get_utc_now()))
             await query.edit_message_text("📝 Task not completed. I will remind you again in 2 minutes.")
-            logger.info(f"Task {task_id} marked as not done, will remind again")
+            logger.info(f"Task {task_id} marked as not done by @{responding_user.username}, will remind again")
         conn.commit()
         conn.close()
 
