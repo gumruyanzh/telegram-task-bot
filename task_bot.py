@@ -97,6 +97,17 @@ def init_db():
             FOREIGN KEY (task_id) REFERENCES tasks(id)
         )
     ''')
+    # Add users table to track user IDs by username
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY,
+            username TEXT NOT NULL,
+            first_name TEXT,
+            last_name TEXT,
+            last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(id, username)
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -114,6 +125,10 @@ class TaskBot:
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message:
             return
+        
+        # Track the user
+        await self._track_user(update.effective_user)
+        
         await update.message.reply_text(
             "Welcome! Admins can create tasks with /createtask @username description time frequency (e.g. /createtask @john Take out trash 14:00 daily).\n\n"
             "Commands:\n"
@@ -124,12 +139,17 @@ class TaskBot:
             "/test - Test reminders (admin only)\n"
             "/testtask - Create a test task (admin only)\n"
             "/time - Show current PST time\n\n"
-            "⏰ All times are in PST (Pacific Time)"
+            "⏰ All times are in PST (Pacific Time)\n\n"
+            "💡 **Tip:** I'll send task reminders privately to you. Task completions will be announced in the group."
         )
 
     async def debug(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.effective_user:
             return
+        
+        # Track the user
+        await self._track_user(update.effective_user)
+        
         user_id = update.effective_user.id
         if not self._is_admin(user_id):
             await update.message.reply_text("❌ Only admins can use debug.")
@@ -148,6 +168,10 @@ class TaskBot:
         c.execute('''SELECT task_id, reminder_count, last_reminder FROM reminders''')
         reminders = c.fetchall()
         
+        # Get tracked users
+        c.execute('''SELECT username, id, first_name FROM users ORDER BY last_seen DESC LIMIT 10''')
+        users = c.fetchall()
+        
         conn.close()
         
         msg = f"🐛 Debug Info\n\n"
@@ -164,11 +188,19 @@ class TaskBot:
         for task_id, count, last_reminder in reminders:
             msg += f"Task {task_id}: {count} reminders, last: {last_reminder}\n"
         
+        msg += f"\nTracked Users ({len(users)}):\n"
+        for username, user_id, first_name in users:
+            msg += f"@{username} (ID: {user_id}, {first_name})\n"
+        
         await update.message.reply_text(msg)
 
     async def test(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.effective_user:
             return
+        
+        # Track the user
+        await self._track_user(update.effective_user)
+        
         user_id = update.effective_user.id
         if not self._is_admin(user_id):
             await update.message.reply_text("❌ Only admins can use test.")
@@ -181,6 +213,10 @@ class TaskBot:
     async def testtask(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.effective_user:
             return
+        
+        # Track the user
+        await self._track_user(update.effective_user)
+        
         user_id = update.effective_user.id
         if not self._is_admin(user_id):
             await update.message.reply_text("❌ Only admins can use testtask.")
@@ -220,12 +256,16 @@ class TaskBot:
             f"Description: {description}\n"
             f"Time: {time_str} PST (in 1 minute)\n"
             f"Current PST time: {pst_now.strftime('%H:%M:%S')}\n\n"
-            f"You should get a reminder in about 1-2 minutes!"
+            f"You should get a **private reminder** in about 1-2 minutes!"
         )
 
     async def time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message:
             return
+        
+        # Track the user
+        await self._track_user(update.effective_user)
+        
         pst_now = get_pst_now()
         utc_now = get_utc_now()
         await update.message.reply_text(
@@ -241,6 +281,10 @@ class TaskBot:
     async def createtask(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.effective_user:
             return
+        
+        # Track the user
+        await self._track_user(update.effective_user)
+        
         user_id = update.effective_user.id
         if not self._is_admin(user_id):
             await update.message.reply_text("❌ Only admins can create tasks.")
@@ -277,11 +321,15 @@ class TaskBot:
         conn.commit()
         conn.close()
         logger.info(f"Created task {task_id} for @{username} at {time_str} PST")
-        await update.message.reply_text(f"✅ Task created for @{username}: {description} at {time_str} PST ({frequency})\nTask ID: {task_id}")
+        await update.message.reply_text(f"✅ Task created for @{username}: {description} at {time_str} PST ({frequency})\nTask ID: {task_id}\n\n💡 **Note:** Reminders will be sent privately to @{username}. Completion will be announced in this group.")
 
     async def tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.effective_chat:
             return
+        
+        # Track the user
+        await self._track_user(update.effective_user)
+        
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('''SELECT id, assignee_username, description, scheduled_time, frequency, is_done FROM tasks WHERE chat_id = ?''', (update.effective_chat.id,))
@@ -299,6 +347,10 @@ class TaskBot:
     async def removetask(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.effective_user:
             return
+        
+        # Track the user
+        await self._track_user(update.effective_user)
+        
         user_id = update.effective_user.id
         if not self._is_admin(user_id):
             await update.message.reply_text("❌ Only admins can remove tasks.")
@@ -324,6 +376,10 @@ class TaskBot:
         if not query:
             return
         await query.answer()
+        
+        # Track the user responding
+        await self._track_user(query.from_user)
+        
         data = query.data
         if not data or not data.startswith("task_"):
             return
@@ -340,14 +396,14 @@ class TaskBot:
         # Get the task details to check if this user can respond
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute('SELECT assignee_username, is_done FROM tasks WHERE id = ?', (task_id,))
+        c.execute('SELECT assignee_username, is_done, chat_id, description FROM tasks WHERE id = ?', (task_id,))
         row = c.fetchone()
         if not row:
             await query.edit_message_text("❌ Task not found.")
             conn.close()
             return
             
-        assignee_username, is_done = row
+        assignee_username, is_done, original_chat_id, task_description = row
         
         # Check if task is already done
         if is_done:
@@ -373,6 +429,17 @@ class TaskBot:
             c.execute('UPDATE tasks SET is_done = 1 WHERE id = ?', (task_id,))
             c.execute('DELETE FROM reminders WHERE task_id = ?', (task_id,))
             await query.edit_message_text("✅ Task marked as complete! You will not be reminded again.")
+            
+            # Send completion message to the original group
+            try:
+                await context.bot.send_message(
+                    chat_id=original_chat_id,
+                    text=f"✅ **Task Completed**\n\n@{assignee_username} has completed: {task_description}"
+                )
+                logger.info(f"Sent completion notification to group {original_chat_id}")
+            except Exception as e:
+                logger.error(f"Failed to send completion message to group: {e}")
+            
             logger.info(f"Task {task_id} marked as complete by @{responding_user.username}")
         elif response == "no":
             # Increment reminder count and schedule next
@@ -514,6 +581,30 @@ class TaskBot:
         conn.close()
         logger.info(f"=== REMINDER CHECK END ===")
 
+    async def _track_user(self, user):
+        """Track user information for private messaging"""
+        if not user or not user.username:
+            return
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''
+            INSERT OR REPLACE INTO users (id, username, first_name, last_name, last_seen)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (user.id, user.username.lower(), user.first_name, user.last_name, get_utc_now()))
+        conn.commit()
+        conn.close()
+        logger.debug(f"Tracked user @{user.username} (ID: {user.id})")
+
+    async def _get_user_id_by_username(self, username):
+        """Get user ID by username from our database"""
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('SELECT id FROM users WHERE username = ?', (username.lower(),))
+        row = c.fetchone()
+        conn.close()
+        return row[0] if row else None
+
     async def _send_task_reminder(self, context, chat_id, assignee_id, username, description, task_id):
         keyboard = [
             [
@@ -522,15 +613,36 @@ class TaskBot:
             ]
         ]
         markup = InlineKeyboardMarkup(keyboard)
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"@{username}, it's time for your task: {description}\nHave you completed it?",
-                reply_markup=markup
-            )
-            logger.info(f"Successfully sent reminder for task {task_id} to @{username}")
-        except Exception as e:
-            logger.error(f"Failed to send reminder for task {task_id}: {e}")
+        
+        # Try to get user ID from our database
+        user_id_to_dm = await self._get_user_id_by_username(username)
+        
+        # Try to send a direct message first
+        reminder_sent_privately = False
+        if user_id_to_dm:
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id_to_dm,
+                    text=f"⏰ **Task Reminder**\n\nYou have a task due: {description}\n\nHave you completed it?",
+                    reply_markup=markup
+                )
+                logger.info(f"Successfully sent private reminder for task {task_id} to @{username}")
+                reminder_sent_privately = True
+            except Exception as e:
+                logger.warning(f"Failed to send private message to @{username}: {e}")
+        
+        # If private message failed or user ID not found, send to group with a note
+        if not reminder_sent_privately:
+            try:
+                bot_username = context.bot.username if hasattr(context.bot, 'username') else "this bot"
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"⏰ **Private Task Reminder**\n\n@{username}, you have a task due: {description}\n\nHave you completed it?\n\n💡 *I tried to send this privately, but couldn't reach you. Please start a chat with @{bot_username} to receive private reminders.*",
+                    reply_markup=markup
+                )
+                logger.info(f"Sent group reminder for task {task_id} to @{username} (private message failed)")
+            except Exception as e:
+                logger.error(f"Failed to send reminder for task {task_id}: {e}")
 
     def run(self):
         self.application = Application.builder().token(self.token).build()
