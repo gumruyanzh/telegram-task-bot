@@ -74,8 +74,63 @@ class TaskBot:
         if not update.message:
             return
         await update.message.reply_text(
-            "Welcome! Admins can create tasks with /createtask @username description time frequency (e.g. /createtask @john Take out trash 14:00 daily)."
+            "Welcome! Admins can create tasks with /createtask @username description time frequency (e.g. /createtask @john Take out trash 14:00 daily).\n\n"
+            "Commands:\n"
+            "/createtask - Create a new task\n"
+            "/tasks - List all tasks\n"
+            "/removetask - Remove a task\n"
+            "/debug - Show debug info (admin only)\n"
+            "/test - Test reminders (admin only)"
         )
+
+    async def debug(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.message or not update.effective_user:
+            return
+        user_id = update.effective_user.id
+        if not self._is_admin(user_id):
+            await update.message.reply_text("❌ Only admins can use debug.")
+            return
+        
+        now = datetime.utcnow()
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Get all tasks
+        c.execute('''SELECT id, chat_id, assignee_username, description, scheduled_time, frequency, is_done FROM tasks''')
+        tasks = c.fetchall()
+        
+        # Get all reminders
+        c.execute('''SELECT task_id, reminder_count, last_reminder FROM reminders''')
+        reminders = c.fetchall()
+        
+        conn.close()
+        
+        msg = f"🐛 Debug Info\n\n"
+        msg += f"Current UTC time: {now.strftime('%H:%M:%S')}\n\n"
+        msg += f"Tasks ({len(tasks)}):\n"
+        for task in tasks:
+            task_id, chat_id, username, desc, sched_time, freq, is_done = task
+            status = "✅ Done" if is_done else "⏳ Pending"
+            msg += f"ID {task_id}: @{username} - {desc[:30]}...\n"
+            msg += f"  Time: {sched_time} ({freq}) - {status}\n"
+        
+        msg += f"\nReminders ({len(reminders)}):\n"
+        for task_id, count, last_reminder in reminders:
+            msg += f"Task {task_id}: {count} reminders, last: {last_reminder}\n"
+        
+        await update.message.reply_text(msg)
+
+    async def test(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.message or not update.effective_user:
+            return
+        user_id = update.effective_user.id
+        if not self._is_admin(user_id):
+            await update.message.reply_text("❌ Only admins can use test.")
+            return
+        
+        await update.message.reply_text("🧪 Testing reminder system...")
+        await self.send_reminders(context)
+        await update.message.reply_text("✅ Reminder test completed. Check logs for details.")
 
     async def createtask(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.effective_user:
@@ -127,6 +182,7 @@ class TaskBot:
         task_id = c.lastrowid
         conn.commit()
         conn.close()
+        logger.info(f"Created task {task_id} for @{username} at {time_str}")
         await update.message.reply_text(f"✅ Task created for @{username}: {description} at {time_str} ({frequency})\nTask ID: {task_id}")
 
     async def tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -199,6 +255,7 @@ class TaskBot:
             c.execute('UPDATE tasks SET is_done = 1 WHERE id = ?', (task_id,))
             c.execute('DELETE FROM reminders WHERE task_id = ?', (task_id,))
             await query.edit_message_text("✅ Task marked as complete! You will not be reminded again.")
+            logger.info(f"Task {task_id} marked as complete")
         elif response == "no":
             # Increment reminder count and schedule next
             c.execute('SELECT reminder_count FROM reminders WHERE task_id = ?', (task_id,))
@@ -210,55 +267,85 @@ class TaskBot:
                 count = 1
                 c.execute('INSERT INTO reminders (task_id, reminder_count, last_reminder) VALUES (?, ?, ?)', (task_id, count, datetime.utcnow()))
             await query.edit_message_text("📝 Task not completed. I will remind you again in 2 minutes.")
+            logger.info(f"Task {task_id} marked as not done, will remind again")
         conn.commit()
         conn.close()
 
     async def send_reminders(self, context: ContextTypes.DEFAULT_TYPE):
         now = datetime.utcnow()
+        logger.info(f"Checking for reminders at {now.strftime('%H:%M:%S')}")
+        
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
+        
         # Get all tasks that are not done
         c.execute('''SELECT id, chat_id, assignee_id, assignee_username, description, scheduled_time, frequency FROM tasks WHERE is_done = 0''')
         tasks = c.fetchall()
+        logger.info(f"Found {len(tasks)} active tasks")
+        
         for task in tasks:
             task_id, chat_id, assignee_id, username, description, sched_time, freq = task
-            # Check if it's time to remind
-            # Only send if it's the right time (or for daily, if not already reminded today)
+            
+            # Check if it's time to remind (with 1-minute tolerance)
             now_time = now.strftime("%H:%M")
-            if sched_time == now_time:
-                # Check if already reminded in last 2 minutes
+            sched_hour, sched_min = map(int, sched_time.split(':'))
+            now_hour, now_min = now.hour, now.minute
+            
+            # Check if current time is within 1 minute of scheduled time
+            time_match = False
+            if now_hour == sched_hour and abs(now_min - sched_min) <= 1:
+                time_match = True
+            
+            if time_match:
+                logger.info(f"Time matches for task {task_id} ({sched_time})")
+                # Check if already reminded recently
                 c.execute('SELECT last_reminder, reminder_count FROM reminders WHERE task_id = ?', (task_id,))
                 row = c.fetchone()
+                
+                should_remind = True
                 if row:
                     last_reminder, reminder_count = row
                     if reminder_count >= MAX_REMINDERS:
-                        continue
-                    if last_reminder:
+                        logger.info(f"Task {task_id} reached max reminders ({reminder_count})")
+                        should_remind = False
+                    elif last_reminder:
                         try:
                             last_dt = datetime.fromisoformat(last_reminder)
                             if (now - last_dt).total_seconds() < REMINDER_INTERVAL:
-                                continue
+                                logger.info(f"Task {task_id} was reminded recently")
+                                should_remind = False
                         except ValueError:
                             pass  # Invalid date format, proceed with reminder
-                # Send reminder
-                await self._send_task_reminder(context, chat_id, assignee_id, username, description, task_id)
-                # Update reminders table
-                if row:
-                    c.execute('UPDATE reminders SET last_reminder = ?, reminder_count = ? WHERE task_id = ?', (now, (reminder_count or 0) + 1, task_id))
-                else:
-                    c.execute('INSERT INTO reminders (task_id, reminder_count, last_reminder) VALUES (?, ?, ?)', (task_id, 1, now))
-        # Now, send follow-up reminders for tasks with NO or no response
+                
+                if should_remind:
+                    logger.info(f"Sending reminder for task {task_id}")
+                    await self._send_task_reminder(context, chat_id, assignee_id, username, description, task_id)
+                    # Update reminders table
+                    if row:
+                        c.execute('UPDATE reminders SET last_reminder = ?, reminder_count = ? WHERE task_id = ?', 
+                                (now, (reminder_count or 0) + 1, task_id))
+                    else:
+                        c.execute('INSERT INTO reminders (task_id, reminder_count, last_reminder) VALUES (?, ?, ?)', 
+                                (task_id, 1, now))
+        
+        # Send follow-up reminders for tasks with NO or no response
         c.execute('''SELECT r.task_id, t.chat_id, t.assignee_id, t.assignee_username, t.description, r.reminder_count, r.last_reminder FROM reminders r JOIN tasks t ON r.task_id = t.id WHERE t.is_done = 0 AND r.reminder_count < ?''', (MAX_REMINDERS,))
-        for row in c.fetchall():
+        follow_ups = c.fetchall()
+        logger.info(f"Found {len(follow_ups)} tasks needing follow-up reminders")
+        
+        for row in follow_ups:
             task_id, chat_id, assignee_id, username, description, reminder_count, last_reminder = row
             if last_reminder:
                 try:
                     last_dt = datetime.fromisoformat(last_reminder)
                     if (now - last_dt).total_seconds() >= REMINDER_INTERVAL:
+                        logger.info(f"Sending follow-up reminder for task {task_id} (count: {reminder_count})")
                         await self._send_task_reminder(context, chat_id, assignee_id, username, description, task_id)
-                        c.execute('UPDATE reminders SET last_reminder = ?, reminder_count = ? WHERE task_id = ?', (now, reminder_count + 1, task_id))
+                        c.execute('UPDATE reminders SET last_reminder = ?, reminder_count = ? WHERE task_id = ?', 
+                                (now, reminder_count + 1, task_id))
                 except ValueError:
-                    pass  # Invalid date format, skip this reminder
+                    logger.error(f"Invalid date format for task {task_id}: {last_reminder}")
+        
         conn.commit()
         conn.close()
 
@@ -276,8 +363,9 @@ class TaskBot:
                 text=f"@{username}, it's time for your task: {description}\nHave you completed it?",
                 reply_markup=markup
             )
+            logger.info(f"Successfully sent reminder for task {task_id} to @{username}")
         except Exception as e:
-            logger.error(f"Failed to send reminder: {e}")
+            logger.error(f"Failed to send reminder for task {task_id}: {e}")
 
     def run(self):
         self.application = Application.builder().token(self.token).build()
@@ -285,6 +373,8 @@ class TaskBot:
         self.application.add_handler(CommandHandler("createtask", self.createtask))
         self.application.add_handler(CommandHandler("tasks", self.tasks))
         self.application.add_handler(CommandHandler("removetask", self.removetask))
+        self.application.add_handler(CommandHandler("debug", self.debug))
+        self.application.add_handler(CommandHandler("test", self.test))
         self.application.add_handler(CallbackQueryHandler(self.handle_callback))
         # Run reminders every 2 minutes
         self.application.job_queue.run_repeating(self.send_reminders, interval=REMINDER_INTERVAL, first=5)
